@@ -8,6 +8,7 @@ and publishes to your Telegram channel.
 import os
 import json
 import logging
+# v1.1 - text-to-blog
 from http.server import BaseHTTPRequestHandler
 
 import httpx
