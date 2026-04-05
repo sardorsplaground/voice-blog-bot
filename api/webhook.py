@@ -1,5 +1,5 @@
 """
-Blog Bot v6.2 — Dashboard Mode
+Blog Bot v6.3 — Dashboard Mode + X Posting
 
 Send a message to the bot and it shows your original text for every platform.
 AI rewriting is optional — tap the button if you want it polished.
@@ -13,6 +13,12 @@ Backlog: scheduling feature (not built yet).
 import os
 import json
 import logging
+import time
+import hashlib
+import hmac
+import base64
+import urllib.parse
+import secrets
 from http.server import BaseHTTPRequestHandler
 import httpx
 import anthropic
@@ -26,6 +32,12 @@ ALLOWED_USER_IDS = os.environ.get("ALLOWED_USER_IDS", "")
 # LinkedIn
 LINKEDIN_ACCESS_TOKEN = os.environ.get("LINKEDIN_ACCESS_TOKEN", "")
 LINKEDIN_PERSON_URN = os.environ.get("LINKEDIN_PERSON_URN", "")
+
+# X / Twitter (OAuth 1.0a)
+X_API_KEY = os.environ.get("X_API_KEY", "")
+X_API_KEY_SECRET = os.environ.get("X_API_KEY_SECRET", "")
+X_ACCESS_TOKEN = os.environ.get("X_ACCESS_TOKEN", "")
+X_ACCESS_TOKEN_SECRET = os.environ.get("X_ACCESS_TOKEN_SECRET", "")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
@@ -301,6 +313,77 @@ def post_to_linkedin(text):
 
 
 # ---------------------------------------------------------------------------
+# X / Twitter posting (OAuth 1.0a)
+# ---------------------------------------------------------------------------
+
+def _percent_encode(s):
+    return urllib.parse.quote(str(s), safe="")
+
+
+def _build_oauth1_header(method, url, body_params=None):
+    """Build OAuth 1.0a Authorization header for X API v2."""
+    oauth_params = {
+        "oauth_consumer_key": X_API_KEY,
+        "oauth_nonce": secrets.token_hex(16),
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp": str(int(time.time())),
+        "oauth_token": X_ACCESS_TOKEN,
+        "oauth_version": "1.0",
+    }
+
+    # Combine all params for signature base string
+    all_params = {**oauth_params}
+    if body_params:
+        all_params.update(body_params)
+
+    # Sort and encode
+    sorted_params = "&".join(
+        f"{_percent_encode(k)}={_percent_encode(v)}"
+        for k, v in sorted(all_params.items())
+    )
+
+    base_string = f"{method.upper()}&{_percent_encode(url)}&{_percent_encode(sorted_params)}"
+    signing_key = f"{_percent_encode(X_API_KEY_SECRET)}&{_percent_encode(X_ACCESS_TOKEN_SECRET)}"
+
+    signature = base64.b64encode(
+        hmac.new(signing_key.encode(), base_string.encode(), hashlib.sha1).digest()
+    ).decode()
+
+    oauth_params["oauth_signature"] = signature
+
+    header = "OAuth " + ", ".join(
+        f'{_percent_encode(k)}="{_percent_encode(v)}"'
+        for k, v in sorted(oauth_params.items())
+    )
+    return header
+
+
+def post_to_x(text):
+    """Post a tweet via X API v2. Returns True on success or error string."""
+    if not all([X_API_KEY, X_API_KEY_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET]):
+        return "X API credentials not configured."
+
+    url = "https://api.x.com/2/tweets"
+    auth_header = _build_oauth1_header("POST", url)
+
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(
+            url,
+            headers={
+                "Authorization": auth_header,
+                "Content-Type": "application/json",
+            },
+            json={"text": text},
+        )
+        logger.info(f"X API /2/tweets: {resp.status_code} {resp.text[:500]}")
+        if resp.status_code in (200, 201):
+            tweet_data = resp.json().get("data", {})
+            tweet_id = tweet_data.get("id", "")
+            return True
+        return f"X API error {resp.status_code}: {resp.text[:200]}"
+
+
+# ---------------------------------------------------------------------------
 # Extract draft text from a message (strip the header line)
 # ---------------------------------------------------------------------------
 
@@ -357,12 +440,14 @@ def send_dashboard(chat_id, original_text):
     x_note = ""
     if len(original_text) > 280:
         x_note = f"\n\n\u26a0\ufe0f {len(original_text)} chars — over 280 limit. Use AI Rewrite to fit."
+    x_has_creds = all([X_API_KEY, X_API_KEY_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET])
+    x_action = [{"text": "\U0001f426 Post to X", "callback_data": "post_x"}] if x_has_creds else [{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}]
     send_telegram_message(
         chat_id,
         f"{X_HEADER}{original_text}{x_note}",
         reply_markup={
             "inline_keyboard": [
-                [{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}],
+                x_action,
                 [{"text": "\u2728 AI Rewrite", "callback_data": "rewrite_x"}],
             ]
         },
@@ -420,6 +505,26 @@ def process_callback_query(update):
             edit_telegram_message(chat_id, message_id, f"Failed to post to LinkedIn. {error_detail}")
             answer_callback_query(callback_id, "Failed")
             return f"LinkedIn post failed: {error_detail}"
+
+    # --- Post to X ---
+    if data == "post_x":
+        draft = extract_draft(message_text)
+        if not draft:
+            answer_callback_query(callback_id, "Could not find draft text.")
+            return "X draft extraction failed"
+        if len(draft) > 280:
+            answer_callback_query(callback_id, f"Too long ({len(draft)} chars). Use AI Rewrite first!")
+            return "X draft too long"
+        result = post_to_x(draft)
+        if result is True:
+            edit_telegram_message(chat_id, message_id, "\u2705 Posted to X!")
+            answer_callback_query(callback_id, "Posted!")
+            return "Posted to X"
+        else:
+            error_detail = result if isinstance(result, str) else "Check credentials."
+            edit_telegram_message(chat_id, message_id, f"Failed to post to X. {error_detail}")
+            answer_callback_query(callback_id, "Failed")
+            return f"X post failed: {error_detail}"
 
     # --- Copy confirmations (just acknowledge) ---
     if data == "copy_li":
@@ -484,13 +589,13 @@ def process_callback_query(update):
         answer_callback_query(callback_id, "Rewriting with AI...")
         try:
             rewritten = repurpose_for_x(draft)
+            x_has_creds = all([X_API_KEY, X_API_KEY_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET])
+            x_action = [{"text": "\U0001f426 Post to X", "callback_data": "post_x"}] if x_has_creds else [{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}]
             edit_telegram_message(
                 chat_id, message_id,
                 f"{X_HEADER}{rewritten}",
                 reply_markup={
-                    "inline_keyboard": [
-                        [{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}],
-                    ]
+                    "inline_keyboard": [x_action]
                 },
             )
             return "X rewritten"
@@ -524,6 +629,7 @@ def process_dm(update):
 
     if text.startswith("/start"):
         li_status = "connected" if LINKEDIN_ACCESS_TOKEN else "not connected (copy-paste mode)"
+        x_status = "connected" if all([X_API_KEY, X_ACCESS_TOKEN]) else "not connected (copy-paste mode)"
         send_telegram_message(
             chat_id,
             f"Hey {first_name}!\n\n"
@@ -534,7 +640,8 @@ def process_dm(update):
             "Your text posts as-is by default.\n"
             "Tap \u2728 *AI Rewrite* if you want it polished.\n"
             "Nothing posts automatically.\n\n"
-            f"LinkedIn: {li_status}",
+            f"LinkedIn: {li_status}\n"
+            f"X: {x_status}",
         )
         return "Start"
 
@@ -595,12 +702,14 @@ def process_channel_post(update):
         x_note = ""
         if len(text) > 280:
             x_note = f"\n\n\u26a0\ufe0f {len(text)} chars — over 280 limit. Use AI Rewrite to fit."
+        x_has_creds = all([X_API_KEY, X_API_KEY_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET])
+        x_action = [{"text": "\U0001f426 Post to X", "callback_data": "post_x"}] if x_has_creds else [{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}]
         send_telegram_message(
             owner_id,
             f"{X_HEADER}{text}{x_note}",
             reply_markup={
                 "inline_keyboard": [
-                    [{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}],
+                    x_action,
                     [{"text": "\u2728 AI Rewrite", "callback_data": "rewrite_x"}],
                 ]
             },
@@ -651,5 +760,5 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(
-            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.2"}).encode()
+            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.3"}).encode()
         )
