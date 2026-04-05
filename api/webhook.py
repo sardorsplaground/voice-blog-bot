@@ -1,9 +1,9 @@
 """
-Blog Bot v4.1 — Post to Telegram + Auto-post to LinkedIn + Repurpose for X
+Blog Bot v5.0 — Post to Telegram + LinkedIn (with approval) + Repurpose for X
 
 - DM the bot: posts your exact text to your Telegram channel, then repurposes
 - Post directly in your channel: bot detects it and repurposes automatically
-- If LINKEDIN_ACCESS_TOKEN is set, auto-posts to LinkedIn
+- LinkedIn draft is sent for your approval before posting
 - X version is always sent as copy-paste in the bot chat
 """
 
@@ -70,6 +70,10 @@ Original post:
 
 Output ONLY the LinkedIn post text, nothing else."""
 
+# --- Marker used to delimit the LinkedIn draft in messages ---
+DRAFT_MARKER = "--- LINKEDIN DRAFT ---"
+DRAFT_END_MARKER = "--- END DRAFT ---"
+
 
 def is_user_allowed(user_id):
     if not ALLOWED_USER_IDS.strip():
@@ -78,11 +82,36 @@ def is_user_allowed(user_id):
     return user_id in allowed
 
 
-def send_telegram_message(chat_id, text, parse_mode="Markdown"):
+def send_telegram_message(chat_id, text, parse_mode="Markdown", reply_markup=None):
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+
+def edit_telegram_message(chat_id, message_id, text, parse_mode="Markdown", reply_markup=None):
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": parse_mode,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(f"{TELEGRAM_API}/editMessageText", json=payload)
+        resp.raise_for_status()
+        return resp.json()
+
+
+def answer_callback_query(callback_query_id, text=""):
     with httpx.Client(timeout=30) as client:
         resp = client.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode},
+            f"{TELEGRAM_API}/answerCallbackQuery",
+            json={"callback_query_id": callback_query_id, "text": text},
         )
         resp.raise_for_status()
         return resp.json()
@@ -138,7 +167,6 @@ def post_to_linkedin(text):
     """Post text to LinkedIn using the Posts API. Returns True on success."""
     if not LINKEDIN_ACCESS_TOKEN or not LINKEDIN_PERSON_URN:
         return False
-
     with httpx.Client(timeout=30) as client:
         resp = client.post(
             "https://api.linkedin.com/rest/posts",
@@ -169,31 +197,78 @@ def post_to_linkedin(text):
             return False
 
 
-def notify_user(text, x_version, linkedin_version, linkedin_posted):
-    """Send repurposed versions to the bot owner via DM."""
-    # Find the owner's chat_id — use ALLOWED_USER_IDS
-    owner_ids = [uid.strip() for uid in ALLOWED_USER_IDS.split(",") if uid.strip()]
-    if not owner_ids:
-        return
+def send_linkedin_draft(chat_id, linkedin_version):
+    """Send the LinkedIn draft with approve/skip inline keyboard buttons."""
+    draft_message = (
+        f"*LinkedIn Draft:*\n\n"
+        f"{linkedin_version}\n\n"
+        f"{DRAFT_MARKER}\n{linkedin_version}\n{DRAFT_END_MARKER}"
+    )
 
-    for owner_id in owner_ids:
-        # X version (always copy-paste for now)
-        send_telegram_message(
-            int(owner_id),
-            "*For X:*\n\n" + x_version,
-        )
+    inline_keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "Post to LinkedIn", "callback_data": "post_li"},
+                {"text": "Skip", "callback_data": "skip_li"},
+            ]
+        ]
+    }
 
-        # LinkedIn version
-        if linkedin_posted:
-            send_telegram_message(
-                int(owner_id),
-                "Posted to LinkedIn!",
-            )
+    return send_telegram_message(chat_id, draft_message, reply_markup=inline_keyboard)
+
+
+def extract_draft_from_message(message_text):
+    """Extract the LinkedIn draft text from between the markers."""
+    if DRAFT_MARKER not in message_text or DRAFT_END_MARKER not in message_text:
+        return None
+    start = message_text.index(DRAFT_MARKER) + len(DRAFT_MARKER)
+    end = message_text.index(DRAFT_END_MARKER)
+    return message_text[start:end].strip()
+
+
+def process_callback_query(update):
+    """Handle inline keyboard button presses (approve/skip LinkedIn)."""
+    callback = update.get("callback_query")
+    if not callback:
+        return "No callback_query"
+
+    callback_id = callback["id"]
+    data = callback.get("data", "")
+    message = callback.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    message_id = message.get("message_id")
+    message_text = message.get("text", "")
+
+    if data == "post_li":
+        # Extract the draft from the message
+        draft_text = extract_draft_from_message(message_text)
+        if not draft_text:
+            answer_callback_query(callback_id, "Could not find draft text.")
+            return "Draft extraction failed"
+
+        # Post to LinkedIn
+        success = post_to_linkedin(draft_text)
+
+        if success:
+            edit_telegram_message(chat_id, message_id, "Posted to LinkedIn!")
+            answer_callback_query(callback_id, "Posted!")
+            return "LinkedIn post approved and published"
         else:
-            send_telegram_message(
-                int(owner_id),
-                "*For LinkedIn:*\n\n" + linkedin_version,
+            edit_telegram_message(
+                chat_id, message_id,
+                "Failed to post to LinkedIn. Check your token/credentials."
             )
+            answer_callback_query(callback_id, "Post failed")
+            return "LinkedIn post failed"
+
+    elif data == "skip_li":
+        edit_telegram_message(chat_id, message_id, "LinkedIn post skipped.")
+        answer_callback_query(callback_id, "Skipped")
+        return "LinkedIn post skipped"
+
+    else:
+        answer_callback_query(callback_id)
+        return f"Unknown callback: {data}"
 
 
 def process_channel_post(update):
@@ -212,22 +287,23 @@ def process_channel_post(update):
         return "Skipping bot's own post"
 
     try:
-        send_telegram_message(
-            int(ALLOWED_USER_IDS.split(",")[0].strip()),
-            "Detected your channel post! Repurposing for X and LinkedIn...",
-        )
+        owner_id = int(ALLOWED_USER_IDS.split(",")[0].strip())
+
+        send_telegram_message(owner_id, "Detected your channel post! Repurposing for X and LinkedIn...")
 
         x_version = repurpose_for_x(text)
         linkedin_version = repurpose_for_linkedin(text)
 
-        # Try posting to LinkedIn
-        linkedin_posted = post_to_linkedin(linkedin_version)
+        # X version (always copy-paste)
+        send_telegram_message(owner_id, "*For X:*\n\n" + x_version)
 
-        # Notify owner with repurposed versions
-        notify_user(text, x_version, linkedin_version, linkedin_posted)
+        # LinkedIn version — send as draft for approval
+        if LINKEDIN_ACCESS_TOKEN and LINKEDIN_PERSON_URN:
+            send_linkedin_draft(owner_id, linkedin_version)
+        else:
+            send_telegram_message(owner_id, "*For LinkedIn (copy-paste):*\n\n" + linkedin_version)
 
         return "Channel post repurposed"
-
     except Exception as e:
         logger.error(f"Error processing channel post: {e}", exc_info=True)
         return f"Error: {e}"
@@ -250,13 +326,14 @@ def process_dm(update):
     text = (message.get("text") or "").strip()
 
     if text.startswith("/start"):
-        linkedin_status = "connected" if LINKEDIN_ACCESS_TOKEN else "not connected (copy-paste mode)"
+        linkedin_status = "connected (approval mode)" if LINKEDIN_ACCESS_TOKEN else "not connected (copy-paste mode)"
         send_telegram_message(
             chat_id,
             "Hey " + first_name + "!\n\n"
             "Send me any text and I'll:\n"
             "1. Post it *exactly as you wrote it* to your channel\n"
             "2. Repurpose it for *X* and *LinkedIn*\n\n"
+            "LinkedIn posts will be sent as a *draft for your approval* before publishing.\n\n"
             "You can also post directly to your channel — "
             "I'll detect it and repurpose automatically.\n\n"
             f"LinkedIn: {linkedin_status}",
@@ -278,26 +355,16 @@ def process_dm(update):
         x_version = repurpose_for_x(text)
         linkedin_version = repurpose_for_linkedin(text)
 
-        # Step 3: Try posting to LinkedIn
-        linkedin_posted = post_to_linkedin(linkedin_version)
+        # Step 3: Send X version (always copy-paste)
+        send_telegram_message(chat_id, "*For X:*\n\n" + x_version)
 
-        # Send X version (always copy-paste)
-        send_telegram_message(
-            chat_id,
-            "*For X:*\n\n" + x_version,
-        )
-
-        # Send LinkedIn version
-        if linkedin_posted:
-            send_telegram_message(chat_id, "Posted to LinkedIn!")
+        # Step 4: Send LinkedIn draft for approval
+        if LINKEDIN_ACCESS_TOKEN and LINKEDIN_PERSON_URN:
+            send_linkedin_draft(chat_id, linkedin_version)
         else:
-            send_telegram_message(
-                chat_id,
-                "*For LinkedIn:*\n\n" + linkedin_version,
-            )
+            send_telegram_message(chat_id, "*For LinkedIn (copy-paste):*\n\n" + linkedin_version)
 
         return "Posted and repurposed"
-
     except Exception as e:
         logger.error(f"Error processing message: {e}", exc_info=True)
         send_telegram_message(chat_id, f"Something went wrong: {str(e)[:200]}")
@@ -306,7 +373,9 @@ def process_dm(update):
 
 def process_update(update):
     """Route update to the right handler."""
-    if "channel_post" in update:
+    if "callback_query" in update:
+        return process_callback_query(update)
+    elif "channel_post" in update:
         return process_channel_post(update)
     elif "message" in update:
         return process_dm(update)
@@ -325,6 +394,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.error(f"Failed to process update: {e}", exc_info=True)
             result = f"Error: {e}"
+
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -335,5 +405,6 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(
-            json.dumps({"status": "alive", "bot": "blog-bot", "version": "4.0"}).encode()
+            json.dumps({"status": "alive", "bot": "blog-bot", "version": "5.0"}).encode()
         )
+
