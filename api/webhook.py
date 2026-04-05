@@ -1,10 +1,10 @@
 """
-Blog Bot v5.1 — Post to Telegram + LinkedIn (with approval) + Repurpose for X
+Blog Bot v5.2 — Post to Telegram + LinkedIn (with approval) + Repurpose for X
 - DM the bot: posts your exact text to your Telegram channel, then repurposes
 - Post directly in your channel: bot detects it and repurposes automatically
 - LinkedIn draft is sent for your approval before posting
 - X version is always sent as copy-paste in the bot chat
-- Fix: Use /v2/ugcPosts endpoint (compatible with Share on LinkedIn product)
+- Fix: Auto-resolve LinkedIn member URN via /v2/userinfo
 """
 
 import os
@@ -162,13 +162,60 @@ def repurpose_for_linkedin(text):
     return message.content[0].text.strip()
 
 
+def get_linkedin_member_urn():
+    """Resolve the authenticated user's LinkedIn URN dynamically."""
+    if not LINKEDIN_ACCESS_TOKEN:
+        return None
+
+    with httpx.Client(timeout=30) as client:
+        # Try /v2/userinfo first (OpenID Connect — returns 'sub' = member ID)
+        resp = client.get(
+            "https://api.linkedin.com/v2/userinfo",
+            headers={"Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}"},
+        )
+        logger.info(f"LinkedIn /v2/userinfo response: {resp.status_code} {resp.text[:500]}")
+        if resp.status_code == 200:
+            data = resp.json()
+            sub = data.get("sub")
+            if sub:
+                urn = f"urn:li:person:{sub}"
+                logger.info(f"Resolved LinkedIn URN from userinfo: {urn}")
+                return urn
+
+        # Fallback: try /v2/me
+        resp = client.get(
+            "https://api.linkedin.com/v2/me",
+            headers={"Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}"},
+        )
+        logger.info(f"LinkedIn /v2/me response: {resp.status_code} {resp.text[:500]}")
+        if resp.status_code == 200:
+            data = resp.json()
+            member_id = data.get("id")
+            if member_id:
+                urn = f"urn:li:person:{member_id}"
+                logger.info(f"Resolved LinkedIn URN from /v2/me: {urn}")
+                return urn
+
+    # Final fallback: use env var
+    if LINKEDIN_PERSON_URN:
+        logger.info(f"Using env var LINKEDIN_PERSON_URN: {LINKEDIN_PERSON_URN}")
+        return LINKEDIN_PERSON_URN
+
+    return None
+
+
 def post_to_linkedin(text):
     """Post text to LinkedIn using the UGC Posts API (Share on LinkedIn product)."""
-    if not LINKEDIN_ACCESS_TOKEN or not LINKEDIN_PERSON_URN:
-        logger.error("LinkedIn credentials not configured")
+    if not LINKEDIN_ACCESS_TOKEN:
+        logger.error("LinkedIn access token not configured")
         return False
 
-    logger.info(f"Attempting LinkedIn post with author: {LINKEDIN_PERSON_URN}")
+    author_urn = get_linkedin_member_urn()
+    if not author_urn:
+        logger.error("Could not resolve LinkedIn member URN")
+        return False
+
+    logger.info(f"Attempting LinkedIn post with author: {author_urn}")
 
     with httpx.Client(timeout=30) as client:
         resp = client.post(
@@ -179,7 +226,7 @@ def post_to_linkedin(text):
                 "X-Restli-Protocol-Version": "2.0.0",
             },
             json={
-                "author": LINKEDIN_PERSON_URN,
+                "author": author_urn,
                 "lifecycleState": "PUBLISHED",
                 "specificContent": {
                     "com.linkedin.ugc.ShareContent": {
@@ -408,5 +455,5 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(
-            json.dumps({"status": "alive", "bot": "blog-bot", "version": "5.1"}).encode()
+            json.dumps({"status": "alive", "bot": "blog-bot", "version": "5.2"}).encode()
         )
