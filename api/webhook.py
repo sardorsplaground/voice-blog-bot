@@ -1,10 +1,10 @@
 """
-Blog Bot v5.0 — Post to Telegram + LinkedIn (with approval) + Repurpose for X
-
+Blog Bot v5.1 — Post to Telegram + LinkedIn (with approval) + Repurpose for X
 - DM the bot: posts your exact text to your Telegram channel, then repurposes
 - Post directly in your channel: bot detects it and repurposes automatically
 - LinkedIn draft is sent for your approval before posting
 - X version is always sent as copy-paste in the bot chat
+- Fix: Use /v2/ugcPosts endpoint (compatible with Share on LinkedIn product)
 """
 
 import os
@@ -37,7 +37,6 @@ Keep the author's voice exactly as-is — confident, casual, direct, founder ene
 Never add hashtags. Never sound like a marketer. Keep it real."""
 
 X_PROMPT = """Take this Telegram post and repurpose it for X (Twitter).
-
 Rules:
 - If it fits in one tweet (under 280 chars), make it one tweet
 - If it needs a thread, break it into numbered tweets (1/, 2/, etc.)
@@ -54,7 +53,6 @@ Original post:
 Output ONLY the tweet(s). If it's a thread, separate tweets with a blank line."""
 
 LINKEDIN_PROMPT = """Take this Telegram post and repurpose it for LinkedIn.
-
 Rules:
 - Keep it under 1300 characters (LinkedIn sweet spot)
 - First line should be a hook that makes people click "see more"
@@ -69,6 +67,7 @@ Original post:
 ---
 
 Output ONLY the LinkedIn post text, nothing else."""
+
 
 # --- Marker used to delimit the LinkedIn draft in messages ---
 DRAFT_MARKER = "--- LINKEDIN DRAFT ---"
@@ -89,7 +88,7 @@ def send_telegram_message(chat_id, text, parse_mode="Markdown", reply_markup=Non
     with httpx.Client(timeout=30) as client:
         resp = client.post(f"{TELEGRAM_API}/sendMessage", json=payload)
         resp.raise_for_status()
-        return resp.json()
+    return resp.json()
 
 
 def edit_telegram_message(chat_id, message_id, text, parse_mode="Markdown", reply_markup=None):
@@ -104,7 +103,7 @@ def edit_telegram_message(chat_id, message_id, text, parse_mode="Markdown", repl
     with httpx.Client(timeout=30) as client:
         resp = client.post(f"{TELEGRAM_API}/editMessageText", json=payload)
         resp.raise_for_status()
-        return resp.json()
+    return resp.json()
 
 
 def answer_callback_query(callback_query_id, text=""):
@@ -114,7 +113,7 @@ def answer_callback_query(callback_query_id, text=""):
             json={"callback_query_id": callback_query_id, "text": text},
         )
         resp.raise_for_status()
-        return resp.json()
+    return resp.json()
 
 
 def post_to_channel(text):
@@ -164,31 +163,38 @@ def repurpose_for_linkedin(text):
 
 
 def post_to_linkedin(text):
-    """Post text to LinkedIn using the Posts API. Returns True on success."""
+    """Post text to LinkedIn using the UGC Posts API (Share on LinkedIn product)."""
     if not LINKEDIN_ACCESS_TOKEN or not LINKEDIN_PERSON_URN:
+        logger.error("LinkedIn credentials not configured")
         return False
+
+    logger.info(f"Attempting LinkedIn post with author: {LINKEDIN_PERSON_URN}")
+
     with httpx.Client(timeout=30) as client:
         resp = client.post(
-            "https://api.linkedin.com/rest/posts",
+            "https://api.linkedin.com/v2/ugcPosts",
             headers={
                 "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
                 "Content-Type": "application/json",
-                "LinkedIn-Version": "202504",
                 "X-Restli-Protocol-Version": "2.0.0",
             },
             json={
                 "author": LINKEDIN_PERSON_URN,
-                "commentary": text,
-                "visibility": "PUBLIC",
-                "distribution": {
-                    "feedDistribution": "MAIN_FEED",
-                    "targetEntities": [],
-                    "thirdPartyDistributionChannels": [],
-                },
                 "lifecycleState": "PUBLISHED",
-                "isReshareDisabledByAuthor": False,
+                "specificContent": {
+                    "com.linkedin.ugc.ShareContent": {
+                        "shareCommentary": {
+                            "text": text
+                        },
+                        "shareMediaCategory": "NONE",
+                    }
+                },
+                "visibility": {
+                    "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+                },
             },
         )
+        logger.info(f"LinkedIn API response: {resp.status_code} {resp.text}")
         if resp.status_code in (200, 201):
             logger.info("Posted to LinkedIn successfully")
             return True
@@ -204,7 +210,6 @@ def send_linkedin_draft(chat_id, linkedin_version):
         f"{linkedin_version}\n\n"
         f"{DRAFT_MARKER}\n{linkedin_version}\n{DRAFT_END_MARKER}"
     )
-
     inline_keyboard = {
         "inline_keyboard": [
             [
@@ -213,7 +218,6 @@ def send_linkedin_draft(chat_id, linkedin_version):
             ]
         ]
     }
-
     return send_telegram_message(chat_id, draft_message, reply_markup=inline_keyboard)
 
 
@@ -248,7 +252,6 @@ def process_callback_query(update):
 
         # Post to LinkedIn
         success = post_to_linkedin(draft_text)
-
         if success:
             edit_telegram_message(chat_id, message_id, "Posted to LinkedIn!")
             answer_callback_query(callback_id, "Posted!")
@@ -288,7 +291,6 @@ def process_channel_post(update):
 
     try:
         owner_id = int(ALLOWED_USER_IDS.split(",")[0].strip())
-
         send_telegram_message(owner_id, "Detected your channel post! Repurposing for X and LinkedIn...")
 
         x_version = repurpose_for_x(text)
@@ -304,6 +306,7 @@ def process_channel_post(update):
             send_telegram_message(owner_id, "*For LinkedIn (copy-paste):*\n\n" + linkedin_version)
 
         return "Channel post repurposed"
+
     except Exception as e:
         logger.error(f"Error processing channel post: {e}", exc_info=True)
         return f"Error: {e}"
@@ -351,7 +354,6 @@ def process_dm(update):
 
         # Step 2: Repurpose for X and LinkedIn
         send_telegram_message(chat_id, "Repurposing for X and LinkedIn...")
-
         x_version = repurpose_for_x(text)
         linkedin_version = repurpose_for_linkedin(text)
 
@@ -365,6 +367,7 @@ def process_dm(update):
             send_telegram_message(chat_id, "*For LinkedIn (copy-paste):*\n\n" + linkedin_version)
 
         return "Posted and repurposed"
+
     except Exception as e:
         logger.error(f"Error processing message: {e}", exc_info=True)
         send_telegram_message(chat_id, f"Something went wrong: {str(e)[:200]}")
@@ -405,6 +408,5 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(
-            json.dumps({"status": "alive", "bot": "blog-bot", "version": "5.0"}).encode()
+            json.dumps({"status": "alive", "bot": "blog-bot", "version": "5.1"}).encode()
         )
-
