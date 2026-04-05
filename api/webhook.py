@@ -1,12 +1,11 @@
 """
-Blog Bot v6.1 — Dashboard Mode
+Blog Bot v6.2 — Dashboard Mode
 
-Send a message to the bot and it formats your content for every platform:
-  - Telegram channel (original text)
-  - LinkedIn (repurposed)
-  - X / Twitter (repurposed)
+Send a message to the bot and it shows your original text for every platform.
+AI rewriting is optional — tap the button if you want it polished.
 
-Then shows buttons so you pick where to post. Nothing auto-posts.
+Platforms: Telegram channel, LinkedIn, X / Twitter.
+Nothing auto-posts. You pick where to post with buttons.
 
 Backlog: scheduling feature (not built yet).
 """
@@ -306,10 +305,15 @@ def post_to_linkedin(text):
 # ---------------------------------------------------------------------------
 
 def extract_draft(message_text):
-    """Strip the first-line header (e.g. '*Telegram Channel:*') and return the draft."""
+    """Strip the first-line header (e.g. '*Telegram Channel:*') and any trailing warnings."""
     if "\n\n" in message_text:
-        return message_text.split("\n\n", 1)[1].strip()
-    return message_text.strip()
+        draft = message_text.split("\n\n", 1)[1].strip()
+    else:
+        draft = message_text.strip()
+    # Remove trailing warning notes (e.g. "⚠️ Over 280 chars...")
+    if "\n\n\u26a0\ufe0f" in draft:
+        draft = draft.split("\n\n\u26a0\ufe0f")[0].strip()
+    return draft
 
 
 # ---------------------------------------------------------------------------
@@ -317,42 +321,50 @@ def extract_draft(message_text):
 # ---------------------------------------------------------------------------
 
 def send_dashboard(chat_id, original_text):
-    """Format content for all platforms and send drafts with action buttons."""
-    send_telegram_message(chat_id, "Formatting your post for all platforms...")
+    """Show original text for all platforms with post + optional AI rewrite buttons."""
 
-    tg_version = repurpose_for_telegram(original_text)
-    li_version = repurpose_for_linkedin(original_text)
-    x_version = repurpose_for_x(original_text)
-
-    # --- Telegram channel draft (single copy of the text) ---
+    # --- Telegram channel draft (original text as-is) ---
     send_telegram_message(
         chat_id,
-        f"{TG_HEADER}{tg_version}",
+        f"{TG_HEADER}{original_text}",
         reply_markup={
-            "inline_keyboard": [[
-                {"text": "\U0001f4e2 Post to Channel", "callback_data": "post_tg"},
-            ]]
+            "inline_keyboard": [
+                [{"text": "\U0001f4e2 Post to Channel", "callback_data": "post_tg"}],
+                [{"text": "\u2728 AI Rewrite", "callback_data": "rewrite_tg"}],
+            ]
         },
     )
 
-    # --- LinkedIn draft ---
-    li_buttons = [[{"text": "\U0001f4bc Post to LinkedIn", "callback_data": "post_li"}]]
+    # --- LinkedIn draft (original text, note if over 3000 chars) ---
+    li_note = ""
+    if len(original_text) > 3000:
+        li_note = "\n\n\u26a0\ufe0f Over 3000 chars — consider AI Rewrite to trim"
+    li_action = [{"text": "\U0001f4bc Post to LinkedIn", "callback_data": "post_li"}]
     if not LINKEDIN_ACCESS_TOKEN:
-        li_buttons = [[{"text": "\U0001f4cb Copy for LinkedIn", "callback_data": "copy_li"}]]
+        li_action = [{"text": "\U0001f4cb Copy for LinkedIn", "callback_data": "copy_li"}]
     send_telegram_message(
         chat_id,
-        f"{LI_HEADER}{li_version}",
-        reply_markup={"inline_keyboard": li_buttons},
+        f"{LI_HEADER}{original_text}{li_note}",
+        reply_markup={
+            "inline_keyboard": [
+                li_action,
+                [{"text": "\u2728 AI Rewrite", "callback_data": "rewrite_li"}],
+            ]
+        },
     )
 
-    # --- X draft (always copy-paste for now) ---
+    # --- X draft (original text, warn if over 280 chars) ---
+    x_note = ""
+    if len(original_text) > 280:
+        x_note = f"\n\n\u26a0\ufe0f {len(original_text)} chars — over 280 limit. Use AI Rewrite to fit."
     send_telegram_message(
         chat_id,
-        f"{X_HEADER}{x_version}",
+        f"{X_HEADER}{original_text}{x_note}",
         reply_markup={
-            "inline_keyboard": [[
-                {"text": "\U0001f426 Copy for X", "callback_data": "copy_x"},
-            ]]
+            "inline_keyboard": [
+                [{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}],
+                [{"text": "\u2728 AI Rewrite", "callback_data": "rewrite_x"}],
+            ]
         },
     )
 
@@ -418,6 +430,75 @@ def process_callback_query(update):
         answer_callback_query(callback_id, "Copy the text above and paste it into X!")
         return "X copy hint"
 
+    # --- AI Rewrite handlers ---
+    if data == "rewrite_tg":
+        draft = extract_draft(message_text)
+        if not draft:
+            answer_callback_query(callback_id, "Could not find draft text.")
+            return "TG rewrite extraction failed"
+        answer_callback_query(callback_id, "Rewriting with AI...")
+        try:
+            rewritten = repurpose_for_telegram(draft)
+            edit_telegram_message(
+                chat_id, message_id,
+                f"{TG_HEADER}{rewritten}",
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "\U0001f4e2 Post to Channel", "callback_data": "post_tg"}],
+                    ]
+                },
+            )
+            return "TG rewritten"
+        except Exception as e:
+            logger.error(f"TG rewrite failed: {e}", exc_info=True)
+            answer_callback_query(callback_id, "Rewrite failed")
+            return f"TG rewrite error: {e}"
+
+    if data == "rewrite_li":
+        draft = extract_draft(message_text)
+        if not draft:
+            answer_callback_query(callback_id, "Could not find draft text.")
+            return "LI rewrite extraction failed"
+        answer_callback_query(callback_id, "Rewriting with AI...")
+        try:
+            rewritten = repurpose_for_linkedin(draft)
+            li_action = [{"text": "\U0001f4bc Post to LinkedIn", "callback_data": "post_li"}]
+            if not LINKEDIN_ACCESS_TOKEN:
+                li_action = [{"text": "\U0001f4cb Copy for LinkedIn", "callback_data": "copy_li"}]
+            edit_telegram_message(
+                chat_id, message_id,
+                f"{LI_HEADER}{rewritten}",
+                reply_markup={"inline_keyboard": [li_action]},
+            )
+            return "LI rewritten"
+        except Exception as e:
+            logger.error(f"LI rewrite failed: {e}", exc_info=True)
+            answer_callback_query(callback_id, "Rewrite failed")
+            return f"LI rewrite error: {e}"
+
+    if data == "rewrite_x":
+        draft = extract_draft(message_text)
+        if not draft:
+            answer_callback_query(callback_id, "Could not find draft text.")
+            return "X rewrite extraction failed"
+        answer_callback_query(callback_id, "Rewriting with AI...")
+        try:
+            rewritten = repurpose_for_x(draft)
+            edit_telegram_message(
+                chat_id, message_id,
+                f"{X_HEADER}{rewritten}",
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}],
+                    ]
+                },
+            )
+            return "X rewritten"
+        except Exception as e:
+            logger.error(f"X rewrite failed: {e}", exc_info=True)
+            answer_callback_query(callback_id, "Rewrite failed")
+            return f"X rewrite error: {e}"
+
     answer_callback_query(callback_id)
     return f"Unknown callback: {data}"
 
@@ -446,11 +527,12 @@ def process_dm(update):
         send_telegram_message(
             chat_id,
             f"Hey {first_name}!\n\n"
-            "Send me any text and I'll format it for:\n"
+            "Send me any text and I'll show it ready for:\n"
             "\u2022 *Telegram* channel\n"
             "\u2022 *LinkedIn*\n"
             "\u2022 *X / Twitter*\n\n"
-            "Then you pick where to post with buttons.\n"
+            "Your text posts as-is by default.\n"
+            "Tap \u2728 *AI Rewrite* if you want it polished.\n"
             "Nothing posts automatically.\n\n"
             f"LinkedIn: {li_status}",
         )
@@ -489,26 +571,39 @@ def process_channel_post(update):
     try:
         owner_id = int(ALLOWED_USER_IDS.split(",")[0].strip())
 
-        send_telegram_message(owner_id, "Detected your channel post! Formatting for other platforms...")
+        send_telegram_message(owner_id, "Detected your channel post! Ready for other platforms.")
 
-        li_version = repurpose_for_linkedin(text)
-        x_version = repurpose_for_x(text)
-
-        # LinkedIn draft
-        li_buttons = [[{"text": "\U0001f4bc Post to LinkedIn", "callback_data": "post_li"}]]
+        # LinkedIn draft (original text)
+        li_note = ""
+        if len(text) > 3000:
+            li_note = "\n\n\u26a0\ufe0f Over 3000 chars — consider AI Rewrite to trim"
+        li_action = [{"text": "\U0001f4bc Post to LinkedIn", "callback_data": "post_li"}]
         if not LINKEDIN_ACCESS_TOKEN:
-            li_buttons = [[{"text": "\U0001f4cb Copy for LinkedIn", "callback_data": "copy_li"}]]
+            li_action = [{"text": "\U0001f4cb Copy for LinkedIn", "callback_data": "copy_li"}]
         send_telegram_message(
             owner_id,
-            f"{LI_HEADER}{li_version}",
-            reply_markup={"inline_keyboard": li_buttons},
+            f"{LI_HEADER}{text}{li_note}",
+            reply_markup={
+                "inline_keyboard": [
+                    li_action,
+                    [{"text": "\u2728 AI Rewrite", "callback_data": "rewrite_li"}],
+                ]
+            },
         )
 
-        # X draft
+        # X draft (original text)
+        x_note = ""
+        if len(text) > 280:
+            x_note = f"\n\n\u26a0\ufe0f {len(text)} chars — over 280 limit. Use AI Rewrite to fit."
         send_telegram_message(
             owner_id,
-            f"{X_HEADER}{x_version}",
-            reply_markup={"inline_keyboard": [[{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}]]},
+            f"{X_HEADER}{text}{x_note}",
+            reply_markup={
+                "inline_keyboard": [
+                    [{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}],
+                    [{"text": "\u2728 AI Rewrite", "callback_data": "rewrite_x"}],
+                ]
+            },
         )
 
         return "Channel post repurposed"
@@ -556,5 +651,5 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(
-            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.1"}).encode()
+            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.2"}).encode()
         )
