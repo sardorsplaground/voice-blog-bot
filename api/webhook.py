@@ -1,5 +1,5 @@
 """
-Blog Bot v4.0 — Post to Telegram + Auto-post to LinkedIn + Repurpose for X
+Blog Bot v4.1 — Post to Telegram + Auto-post to LinkedIn + Repurpose for X
 
 - DM the bot: posts your exact text to your Telegram channel, then repurposes
 - Post directly in your channel: bot detects it and repurposes automatically
