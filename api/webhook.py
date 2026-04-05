@@ -1,5 +1,5 @@
 """
-Blog Bot v6.0 — Dashboard Mode
+Blog Bot v6.1 — Dashboard Mode
 
 Send a message to the bot and it formats your content for every platform:
   - Telegram channel (original text)
@@ -95,15 +95,12 @@ Original text:
 Output ONLY the formatted Telegram post, nothing else."""
 
 # ---------------------------------------------------------------------------
-# Markers for embedding draft text in messages
+# Header prefixes used to separate label from draft content in messages
 # ---------------------------------------------------------------------------
 
-TG_DRAFT_MARKER = "---TG_DRAFT---"
-TG_DRAFT_END = "---/TG_DRAFT---"
-LI_DRAFT_MARKER = "---LI_DRAFT---"
-LI_DRAFT_END = "---/LI_DRAFT---"
-X_DRAFT_MARKER = "---X_DRAFT---"
-X_DRAFT_END = "---/X_DRAFT---"
+TG_HEADER = "*Telegram Channel:*\n\n"
+LI_HEADER = "*LinkedIn:*\n\n"
+X_HEADER = "*X / Twitter:*\n\n"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -241,13 +238,42 @@ def get_linkedin_member_urn():
 
 
 def post_to_linkedin(text):
+    """Post to LinkedIn. Returns True on success, or an error string on failure."""
     if not LINKEDIN_ACCESS_TOKEN:
-        return False
+        return "No LinkedIn access token configured."
     author_urn = get_linkedin_member_urn()
     if not author_urn:
-        return False
+        return "Could not resolve LinkedIn member URN."
     with httpx.Client(timeout=30) as client:
+        # Try the newer Posts API first (v2/posts)
         resp = client.post(
+            "https://api.linkedin.com/rest/posts",
+            headers={
+                "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
+                "Content-Type": "application/json",
+                "LinkedIn-Version": "202401",
+                "X-Restli-Protocol-Version": "2.0.0",
+            },
+            json={
+                "author": author_urn,
+                "commentary": text,
+                "visibility": "PUBLIC",
+                "distribution": {
+                    "feedDistribution": "MAIN_FEED",
+                    "targetEntities": [],
+                    "thirdPartyDistributionChannels": [],
+                },
+                "lifecycleState": "PUBLISHED",
+                "isReshareDisabledByAuthor": False,
+            },
+        )
+        logger.info(f"LinkedIn /rest/posts: {resp.status_code} {resp.text[:500]}")
+        if resp.status_code in (200, 201):
+            return True
+
+        # Fallback to legacy ugcPosts API
+        logger.info("Falling back to ugcPosts API...")
+        resp2 = client.post(
             "https://api.linkedin.com/v2/ugcPosts",
             headers={
                 "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
@@ -268,20 +294,22 @@ def post_to_linkedin(text):
                 },
             },
         )
-        logger.info(f"LinkedIn post: {resp.status_code} {resp.text[:300]}")
-        return resp.status_code in (200, 201)
+        logger.info(f"LinkedIn ugcPosts: {resp2.status_code} {resp2.text[:500]}")
+        if resp2.status_code in (200, 201):
+            return True
+
+        return f"API error {resp.status_code}: {resp.text[:200]}"
 
 
 # ---------------------------------------------------------------------------
-# Extract embedded draft text from a message
+# Extract draft text from a message (strip the header line)
 # ---------------------------------------------------------------------------
 
-def extract_between(text, start_marker, end_marker):
-    if start_marker not in text or end_marker not in text:
-        return None
-    s = text.index(start_marker) + len(start_marker)
-    e = text.index(end_marker)
-    return text[s:e].strip()
+def extract_draft(message_text):
+    """Strip the first-line header (e.g. '*Telegram Channel:*') and return the draft."""
+    if "\n\n" in message_text:
+        return message_text.split("\n\n", 1)[1].strip()
+    return message_text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -296,15 +324,10 @@ def send_dashboard(chat_id, original_text):
     li_version = repurpose_for_linkedin(original_text)
     x_version = repurpose_for_x(original_text)
 
-    # --- Telegram channel draft ---
-    tg_msg = (
-        f"*Telegram Channel:*\n\n"
-        f"{tg_version}\n\n"
-        f"{TG_DRAFT_MARKER}\n{tg_version}\n{TG_DRAFT_END}"
-    )
+    # --- Telegram channel draft (single copy of the text) ---
     send_telegram_message(
         chat_id,
-        tg_msg,
+        f"{TG_HEADER}{tg_version}",
         reply_markup={
             "inline_keyboard": [[
                 {"text": "\U0001f4e2 Post to Channel", "callback_data": "post_tg"},
@@ -313,29 +336,19 @@ def send_dashboard(chat_id, original_text):
     )
 
     # --- LinkedIn draft ---
-    li_msg = (
-        f"*LinkedIn:*\n\n"
-        f"{li_version}\n\n"
-        f"{LI_DRAFT_MARKER}\n{li_version}\n{LI_DRAFT_END}"
-    )
     li_buttons = [[{"text": "\U0001f4bc Post to LinkedIn", "callback_data": "post_li"}]]
     if not LINKEDIN_ACCESS_TOKEN:
         li_buttons = [[{"text": "\U0001f4cb Copy for LinkedIn", "callback_data": "copy_li"}]]
     send_telegram_message(
         chat_id,
-        li_msg,
+        f"{LI_HEADER}{li_version}",
         reply_markup={"inline_keyboard": li_buttons},
     )
 
     # --- X draft (always copy-paste for now) ---
-    x_msg = (
-        f"*X / Twitter:*\n\n"
-        f"{x_version}\n\n"
-        f"{X_DRAFT_MARKER}\n{x_version}\n{X_DRAFT_END}"
-    )
     send_telegram_message(
         chat_id,
-        x_msg,
+        f"{X_HEADER}{x_version}",
         reply_markup={
             "inline_keyboard": [[
                 {"text": "\U0001f426 Copy for X", "callback_data": "copy_x"},
@@ -364,7 +377,7 @@ def process_callback_query(update):
 
     # --- Post to Telegram channel ---
     if data == "post_tg":
-        draft = extract_between(message_text, TG_DRAFT_MARKER, TG_DRAFT_END)
+        draft = extract_draft(message_text)
         if not draft:
             answer_callback_query(callback_id, "Could not find draft text.")
             return "TG draft extraction failed"
@@ -381,19 +394,20 @@ def process_callback_query(update):
 
     # --- Post to LinkedIn ---
     if data == "post_li":
-        draft = extract_between(message_text, LI_DRAFT_MARKER, LI_DRAFT_END)
+        draft = extract_draft(message_text)
         if not draft:
             answer_callback_query(callback_id, "Could not find draft text.")
             return "LI draft extraction failed"
-        success = post_to_linkedin(draft)
-        if success:
+        result = post_to_linkedin(draft)
+        if result is True:
             edit_telegram_message(chat_id, message_id, "\u2705 Posted to LinkedIn!")
             answer_callback_query(callback_id, "Posted!")
             return "Posted to LinkedIn"
         else:
-            edit_telegram_message(chat_id, message_id, "Failed to post to LinkedIn. Check token/credentials.")
+            error_detail = result if isinstance(result, str) else "Check token/credentials."
+            edit_telegram_message(chat_id, message_id, f"Failed to post to LinkedIn. {error_detail}")
             answer_callback_query(callback_id, "Failed")
-            return "LinkedIn post failed"
+            return f"LinkedIn post failed: {error_detail}"
 
     # --- Copy confirmations (just acknowledge) ---
     if data == "copy_li":
@@ -481,25 +495,19 @@ def process_channel_post(update):
         x_version = repurpose_for_x(text)
 
         # LinkedIn draft
-        li_msg = (
-            f"*LinkedIn:*\n\n"
-            f"{li_version}\n\n"
-            f"{LI_DRAFT_MARKER}\n{li_version}\n{LI_DRAFT_END}"
-        )
         li_buttons = [[{"text": "\U0001f4bc Post to LinkedIn", "callback_data": "post_li"}]]
         if not LINKEDIN_ACCESS_TOKEN:
             li_buttons = [[{"text": "\U0001f4cb Copy for LinkedIn", "callback_data": "copy_li"}]]
-        send_telegram_message(owner_id, li_msg, reply_markup={"inline_keyboard": li_buttons})
-
-        # X draft
-        x_msg = (
-            f"*X / Twitter:*\n\n"
-            f"{x_version}\n\n"
-            f"{X_DRAFT_MARKER}\n{x_version}\n{X_DRAFT_END}"
-        )
         send_telegram_message(
             owner_id,
-            x_msg,
+            f"{LI_HEADER}{li_version}",
+            reply_markup={"inline_keyboard": li_buttons},
+        )
+
+        # X draft
+        send_telegram_message(
+            owner_id,
+            f"{X_HEADER}{x_version}",
             reply_markup={"inline_keyboard": [[{"text": "\U0001f426 Copy for X", "callback_data": "copy_x"}]]},
         )
 
@@ -548,5 +556,5 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(
-            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.0"}).encode()
+            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.1"}).encode()
         )
