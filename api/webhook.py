@@ -1,5 +1,5 @@
 """
-Blog Bot v6.3 — Dashboard Mode + X Posting
+Blog Bot v6.3.2 — Dashboard Mode + X Posting
 
 Send a message to the bot and it shows your original text for every platform.
 AI rewriting is optional — tap the button if you want it polished.
@@ -54,22 +54,21 @@ REPURPOSE_SYSTEM = """You repurpose Telegram channel posts for other platforms.
 Keep the author's voice exactly as-is — confident, casual, direct, founder energy.
 Never add hashtags. Never sound like a marketer. Keep it real."""
 
-X_PROMPT = """Take this Telegram post and repurpose it for X (Twitter).
+X_PROMPT = """Take this Telegram post and repurpose it as a SINGLE tweet for X (Twitter).
 
 Rules:
-- If it fits in one tweet (under 280 chars), make it one tweet
-- If it needs a thread, break it into numbered tweets (1/, 2/, etc.)
-- Each tweet must be under 280 characters
+- MUST be under 280 characters total. This is critical — count carefully.
+- Condense ruthlessly: cut filler, use short words, remove anything non-essential
 - Keep the casual, direct tone — no hashtags
-- First tweet should hook people in
-- Cut any filler — X rewards punchy writing
+- Punchy and complete in one tweet — no threads, no numbering
+- If the original is very long, extract the ONE most compelling point
 
 Original post:
 ---
 {text}
 ---
 
-Output ONLY the tweet(s). If it's a thread, separate tweets with a blank line."""
+Output ONLY the tweet text, nothing else. Must be under 280 characters."""
 
 LINKEDIN_PROMPT = """Take this Telegram post and repurpose it for LinkedIn.
 
@@ -512,9 +511,6 @@ def process_callback_query(update):
         if not draft:
             answer_callback_query(callback_id, "Could not find draft text.")
             return "X draft extraction failed"
-        if len(draft) > 280:
-            answer_callback_query(callback_id, f"Too long ({len(draft)} chars). Use AI Rewrite first!")
-            return "X draft too long"
         answer_callback_query(callback_id, "Posting to X...")
         try:
             result = post_to_x(draft)
@@ -764,5 +760,5 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(
-            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.3"}).encode()
+            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.3.2"}).encode()
         )
