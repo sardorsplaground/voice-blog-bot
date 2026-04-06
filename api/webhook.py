@@ -1,5 +1,5 @@
 """
-Blog Bot v6.3.2 — Dashboard Mode + X Posting
+Blog Bot v6.3.3 — Dashboard Mode + X Posting
 
 Send a message to the bot and it shows your original text for every platform.
 AI rewriting is optional — tap the button if you want it polished.
@@ -501,7 +501,11 @@ def process_callback_query(update):
             return "Posted to LinkedIn"
         else:
             error_detail = result if isinstance(result, str) else "Check token/credentials."
-            edit_telegram_message(chat_id, message_id, f"Failed to post to LinkedIn. {error_detail}")
+            safe_error = error_detail[:200].replace("_", " ").replace("*", "").replace("`", "").replace("[", "(").replace("]", ")")
+            try:
+                edit_telegram_message(chat_id, message_id, f"Failed to post to LinkedIn.\n{safe_error}", parse_mode=None)
+            except Exception:
+                pass
             answer_callback_query(callback_id, "Failed")
             return f"LinkedIn post failed: {error_detail}"
 
@@ -519,11 +523,19 @@ def process_callback_query(update):
                 return "Posted to X"
             else:
                 error_detail = result if isinstance(result, str) else "Check credentials."
-                edit_telegram_message(chat_id, message_id, f"Failed to post to X. {error_detail}")
+                safe_error = error_detail[:200].replace("_", " ").replace("*", "").replace("`", "").replace("[", "(").replace("]", ")")
+                try:
+                    edit_telegram_message(chat_id, message_id, f"Failed to post to X.\n{safe_error}", parse_mode=None)
+                except Exception:
+                    pass  # Last resort: at least don't crash
                 return f"X post failed: {error_detail}"
         except Exception as e:
             logger.error(f"X post exception: {e}", exc_info=True)
-            edit_telegram_message(chat_id, message_id, f"Failed to post to X. Error: {str(e)[:200]}")
+            safe_error = str(e)[:200].replace("_", " ").replace("*", "").replace("`", "").replace("[", "(").replace("]", ")")
+            try:
+                edit_telegram_message(chat_id, message_id, f"Failed to post to X.\n{safe_error}", parse_mode=None)
+            except Exception:
+                pass  # Last resort: at least don't crash
             return f"X post exception: {e}"
 
     # --- Copy confirmations (just acknowledge) ---
@@ -760,5 +772,5 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(
-            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.3.2"}).encode()
+            json.dumps({"status": "alive", "bot": "blog-bot", "version": "6.3.3"}).encode()
         )
