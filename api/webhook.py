@@ -515,16 +515,20 @@ def process_callback_query(update):
         if len(draft) > 280:
             answer_callback_query(callback_id, f"Too long ({len(draft)} chars). Use AI Rewrite first!")
             return "X draft too long"
-        result = post_to_x(draft)
-        if result is True:
-            edit_telegram_message(chat_id, message_id, "\u2705 Posted to X!")
-            answer_callback_query(callback_id, "Posted!")
-            return "Posted to X"
-        else:
-            error_detail = result if isinstance(result, str) else "Check credentials."
-            edit_telegram_message(chat_id, message_id, f"Failed to post to X. {error_detail}")
-            answer_callback_query(callback_id, "Failed")
-            return f"X post failed: {error_detail}"
+        answer_callback_query(callback_id, "Posting to X...")
+        try:
+            result = post_to_x(draft)
+            if result is True:
+                edit_telegram_message(chat_id, message_id, "\u2705 Posted to X!")
+                return "Posted to X"
+            else:
+                error_detail = result if isinstance(result, str) else "Check credentials."
+                edit_telegram_message(chat_id, message_id, f"Failed to post to X. {error_detail}")
+                return f"X post failed: {error_detail}"
+        except Exception as e:
+            logger.error(f"X post exception: {e}", exc_info=True)
+            edit_telegram_message(chat_id, message_id, f"Failed to post to X. Error: {str(e)[:200]}")
+            return f"X post exception: {e}"
 
     # --- Copy confirmations (just acknowledge) ---
     if data == "copy_li":
