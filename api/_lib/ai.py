@@ -22,6 +22,17 @@ Rules:
 - Match the language of the input."""
 
 
+def format_variants(text: str) -> dict:
+    """Default: no AI. Just produce LinkedIn + X versions trimmed to platform limits."""
+    text = (text or "").strip()
+    li = text if len(text) <= 3000 else text[:2997].rstrip() + "…"
+    if len(text) <= 280:
+        x = text
+    else:
+        x = text[:277].rstrip() + "…"
+    return {"linkedin": li, "x": x}
+
+
 def generate_variants(text: str) -> dict:
     if not ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
