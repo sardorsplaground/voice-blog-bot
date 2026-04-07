@@ -1,4 +1,4 @@
-"""Postr AI — Telegram webhook (multi-tenant). Per-platform draft messages."""
+"""Postr AI — Telegram webhook (multi-tenant). Per-platform draft messages + images."""
 import json
 import time
 import traceback
@@ -7,15 +7,13 @@ from http.server import BaseHTTPRequestHandler
 from api._lib import db, ai, telegram, linkedin, x as xlib
 from api._lib.crypto import decrypt, encrypt
 
-VERSION = "postr-ai-1.1.0"
+VERSION = "postr-ai-1.2.0"
 BOT_USERNAME = "PostrAIBot"
 
 PLATFORMS = ("linkedin", "x", "tg")
 LABEL = {"linkedin": "LinkedIn", "x": "X", "tg": "Telegram channel"}
 EMOJI = {"linkedin": "🔗", "x": "🐦", "tg": "📣"}
 
-
-# ---------- helpers ----------
 
 def connect_keyboard(user: dict) -> dict:
     rows = []
@@ -37,8 +35,9 @@ def platform_keyboard(platform: str) -> dict:
     ])
 
 
-def format_platform_message(platform: str, text: str) -> str:
-    return f"━━━ {EMOJI[platform]} {LABEL[platform]} ━━━\n\n{text}"
+def format_platform_message(platform: str, text: str, has_image: bool = False) -> str:
+    img = " 🖼" if has_image else ""
+    return f"━━━ {EMOJI[platform]} {LABEL[platform]}{img} ━━━\n\n{text}"
 
 
 def ensure_x_token(user: dict):
@@ -65,15 +64,13 @@ def ensure_x_token(user: dict):
         return None
 
 
-# ---------- command handlers ----------
-
 def cmd_start(chat_id, tg_id, first_name=""):
     user = db.update_user(tg_id, first_name=first_name)
     name = first_name or "there"
     text = (
         f"👋 Hey {name}, I'm Postr AI.\n\n"
-        "Send me any text and I'll prep a separate draft for each connected platform "
-        "(LinkedIn, X, Telegram channel). For each one you can post it, AI-rewrite it, or cancel it independently.\n\n"
+        "Send me any text (or a photo with a caption) and I'll prep a separate draft for each connected platform "
+        "(LinkedIn, X, Telegram channel). For each one you can post it, AI-rewrite it, or cancel independently.\n\n"
         "First, connect your accounts:"
     )
     telegram.send_message(chat_id, text, reply_markup=connect_keyboard(user))
@@ -139,7 +136,7 @@ def cmd_setchannel(chat_id, tg_id, arg):
     telegram.send_message(chat_id, f"✅ Connected channel: {ch_title}")
 
 
-def handle_text(chat_id, tg_id, text, message_id):
+def handle_text(chat_id, tg_id, text, message_id, image_file_id: str = ""):
     user = db.get_user(tg_id)
     if not user:
         return cmd_start(chat_id, tg_id)
@@ -158,35 +155,65 @@ def handle_text(chat_id, tg_id, text, message_id):
         return
     draft = ai.format_variants(text)
     draft["source"] = text
+    if image_file_id:
+        draft["image_file_id"] = image_file_id
     db.save_draft(tg_id, draft)
 
     enabled = []
     if has_li: enabled.append("linkedin")
     if has_x: enabled.append("x")
     if has_tg: enabled.append("tg")
-    telegram.send_message(chat_id, f"Drafts ready for {len(enabled)} platform(s). Review each below:")
+    intro = f"Drafts ready for {len(enabled)} platform(s)"
+    if image_file_id:
+        intro += " (with image)"
+    telegram.send_message(chat_id, intro + ". Review each below:")
     for p in enabled:
         telegram.send_message(
             chat_id,
-            format_platform_message(p, draft.get(p, "")),
+            format_platform_message(p, draft.get(p, ""), bool(image_file_id)),
             reply_markup=platform_keyboard(p),
         )
 
 
-# ---------- callback handlers ----------
-
 def _post_to_platform(platform, user, draft):
+    image_file_id = draft.get("image_file_id", "")
+    img_bytes = None
+    img_mime = "image/jpeg"
+    if image_file_id:
+        try:
+            img_bytes, img_mime = telegram.fetch_photo_bytes(image_file_id)
+        except Exception as e:
+            return {"ok": False, "error": f"image fetch failed: {str(e)[:160]}"}
+
     if platform == "linkedin":
         token = decrypt(user["li_token"])
-        return linkedin.create_post(token, user["li_urn"], draft.get("linkedin", ""))
+        asset_urn = None
+        if img_bytes:
+            try:
+                asset_urn = linkedin.upload_image(token, user["li_urn"], img_bytes)
+            except Exception as e:
+                return {"ok": False, "error": f"LinkedIn image upload failed: {str(e)[:200]}"}
+        return linkedin.create_post(token, user["li_urn"], draft.get("linkedin", ""), asset_urn=asset_urn)
+
     if platform == "x":
         access = ensure_x_token(user)
         if not access:
             return {"ok": False, "error": "token refresh failed"}
-        return xlib.create_tweet(access, draft.get("x", ""))
+        media_id = None
+        if img_bytes:
+            try:
+                media_id = xlib.upload_media(access, img_bytes, img_mime)
+            except Exception as e:
+                return {"ok": False, "error": f"X media upload failed: {str(e)[:200]}"}
+        return xlib.create_tweet(access, draft.get("x", ""), media_id=media_id)
+
     if platform == "tg":
-        rr = telegram.send_message(user["tg_channel_id"], draft.get("tg", ""))
+        if image_file_id:
+            rr = telegram.send_photo(user["tg_channel_id"], image_file_id, caption=draft.get("tg", ""))
+        else:
+            rr = telegram.send_message(user["tg_channel_id"], draft.get("tg", ""))
         return {"ok": rr.get("ok", False), "error": rr.get("error", "")}
+
     return {"ok": False, "error": "unknown platform"}
 
 
@@ -263,7 +290,7 @@ def handle_callback(cb):
             telegram.edit_message(
                 chat_id,
                 message_id,
-                format_platform_message(platform, new_text),
+                format_platform_message(platform, new_text, bool(draft.get("image_file_id"))),
                 reply_markup=platform_keyboard(platform),
             )
         except Exception as e:
@@ -306,7 +333,7 @@ def handle_callback(cb):
             telegram.edit_message(
                 chat_id,
                 message_id,
-                format_platform_message(platform, draft.get(platform, "")) + f"\n\n❌ {r.get('error','unknown error')}",
+                format_platform_message(platform, draft.get(platform, ""), bool(draft.get("image_file_id"))) + f"\n\n❌ {r.get('error','unknown error')}",
                 reply_markup=platform_keyboard(platform),
             )
             telegram.answer_callback(cb_id, "Failed")
@@ -314,8 +341,6 @@ def handle_callback(cb):
 
     telegram.answer_callback(cb_id)
 
-
-# ---------- HTTP handler ----------
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -343,9 +368,19 @@ class handler(BaseHTTPRequestHandler):
         chat_id = chat.get("id")
         tg_id = msg.get("from", {}).get("id")
         first_name = msg.get("from", {}).get("first_name", "")
-        text = msg.get("text", "")
+        text = msg.get("text", "") or msg.get("caption", "") or ""
         if not chat_id or not tg_id:
             return
+
+        image_file_id = ""
+        photos = msg.get("photo")
+        if photos and isinstance(photos, list) and photos:
+            image_file_id = photos[-1].get("file_id", "")
+        else:
+            doc = msg.get("document") or {}
+            if doc.get("mime_type", "").startswith("image/"):
+                image_file_id = doc.get("file_id", "")
+
         if text.startswith("/start"):
             cmd_start(chat_id, tg_id, first_name)
         elif text.startswith("/status"):
@@ -357,7 +392,7 @@ class handler(BaseHTTPRequestHandler):
         elif text.startswith("/help"):
             telegram.send_message(
                 chat_id,
-                "Send me any text and I'll prep a separate draft for each connected platform.\n\n"
+                "Send me any text (or a photo with a caption) and I'll prep a separate draft for each connected platform.\n\n"
                 "/start — welcome + connect accounts\n"
                 "/status — see your connections and usage\n"
                 "/disconnect — disconnect an account\n"
@@ -365,8 +400,8 @@ class handler(BaseHTTPRequestHandler):
             )
         elif text.startswith("/"):
             telegram.send_message(chat_id, "Unknown command. Try /help.")
-        elif text:
-            handle_text(chat_id, tg_id, text, msg.get("message_id", 0))
+        elif text or image_file_id:
+            handle_text(chat_id, tg_id, text, msg.get("message_id", 0), image_file_id=image_file_id)
 
     def _json(self, code, payload):
         b = json.dumps(payload).encode()
