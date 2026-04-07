@@ -43,7 +43,7 @@ def draft_keyboard(has_li: bool, has_x: bool) -> dict:
         rows.append([("LinkedIn", "cb:post:linkedin")])
     if has_x:
         rows.append([("X", "cb:post:x")])
-    rows.append([("🔁 Regenerate", "cb:regen"), ("✕ Cancel", "cb:cancel")])
+    rows.append([("✨ AI rewrite", "cb:airewrite"), ("✕ Cancel", "cb:cancel")])
     return telegram.inline_kb(rows)
 
 
@@ -173,12 +173,7 @@ def handle_text(chat_id: int, tg_id: int, text: str, message_id: int):
     if len(text) > 4000:
         telegram.send_message(chat_id, "That's too long — keep it under 4000 characters.")
         return
-    placeholder = telegram.send_message(chat_id, "✨ Generating posts...")
-    try:
-        draft = ai.generate_variants(text)
-    except Exception as e:
-        telegram.send_message(chat_id, f"Couldn't generate posts: {str(e)[:200]}")
-        return
+    draft = ai.format_variants(text)
     draft["source"] = text
     db.save_draft(tg_id, draft)
     telegram.send_message(
@@ -250,12 +245,12 @@ def handle_callback(cb: dict):
         telegram.answer_callback(cb_id)
         return
 
-    if data == "cb:regen":
+    if data in ("cb:regen", "cb:airewrite"):
         draft = db.get_draft(tg_id)
         if not draft or not draft.get("source"):
-            telegram.answer_callback(cb_id, "Nothing to regenerate")
+            telegram.answer_callback(cb_id, "Nothing to rewrite")
             return
-        telegram.answer_callback(cb_id, "Regenerating...")
+        telegram.answer_callback(cb_id, "AI rewriting...")
         try:
             new_draft = ai.generate_variants(draft["source"])
             new_draft["source"] = draft["source"]
@@ -306,7 +301,7 @@ def handle_callback(cb: dict):
             else:
                 r = xlib.create_tweet(access, draft["x"])
                 results.append(("X", r))
-        if user.get("tg_channel_id"):
+        if user.get("tg_channel_id") and target in ("linkedin", "both"):
             try:
                 rr = telegram.send_message(user["tg_channel_id"], draft.get("linkedin") or draft.get("x") or "")
                 results.append(("Telegram channel", {"ok": rr.get("ok", False), "error": rr.get("error", "")}))
