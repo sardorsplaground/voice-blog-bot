@@ -11,7 +11,7 @@ CLIENT_ID = os.environ.get("X_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("X_CLIENT_SECRET", "")
 BASE = os.environ.get("APP_BASE_URL", "https://postr.ai")
 REDIRECT_URI = f"{BASE}/api/oauth/x/callback"
-SCOPES = "tweet.read tweet.write users.read offline.access"
+SCOPES = "tweet.read tweet.write users.read offline.access media.write"
 
 
 def gen_pkce() -> tuple[str, str]:
@@ -79,8 +79,35 @@ def get_me(access_token: str) -> dict:
         return json.loads(r.read())
 
 
-def create_tweet(access_token: str, text: str) -> dict:
-    body = json.dumps({"text": text}).encode()
+def upload_media(access_token: str, image_bytes: bytes, mime: str = "image/jpeg") -> str:
+    """Upload media via v2 endpoint. Returns media_id string."""
+    boundary = "----postrai" + secrets.token_hex(8)
+    filename = "image.jpg" if "jpeg" in mime else "image.png"
+    pre = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="media"; filename="{filename}"\r\n'
+        f"Content-Type: {mime}\r\n\r\n"
+    ).encode()
+    post = f"\r\n--{boundary}--\r\n".encode()
+    body = pre + image_bytes + post
+    req = urllib.request.Request(
+        "https://api.x.com/2/media/upload",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as r:
+        data = json.loads(r.read())
+    return str(data.get("data", {}).get("id") or data.get("media_id_string") or data.get("id"))
+
+
+def create_tweet(access_token: str, text: str, media_id: str | None = None) -> dict:
+    payload = {"text": text}
+    if media_id:
+        payload["media"] = {"media_ids": [media_id]}
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://api.twitter.com/2/tweets",
         data=body,
