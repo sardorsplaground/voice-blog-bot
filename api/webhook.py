@@ -28,8 +28,10 @@ def connect_keyboard(user: dict) -> dict:
         rows.append([("🔗 Connect LinkedIn", "cb:connect:linkedin")])
     if not user.get("x_access"):
         rows.append([("🐦 Connect X", "cb:connect:x")])
+    if not user.get("tg_channel_id") and (user.get("li_token") or user.get("x_access")):
+        rows.append([("📣 Connect Telegram channel", "cb:connect:telegram")])
     if not rows:
-        rows = [[("✓ Both connected — send me any text", "cb:noop")]]
+        rows = [[("✓ All connected — send me any text", "cb:noop")]]
     return telegram.inline_kb(rows)
 
 
@@ -101,12 +103,14 @@ def cmd_status(chat_id: int, tg_id: int):
     user = db.get_user(tg_id) or {}
     li = "✓ " + user.get("li_name", "connected") if user.get("li_token") else "— not connected"
     x = "✓ @" + user.get("x_username", "") if user.get("x_access") else "— not connected"
+    ch = "✓ " + user.get("tg_channel_name", "") if user.get("tg_channel_id") else "— not connected"
     used = user.get("posts_used", 0)
     plan = user.get("plan", "free")
     limit = db.FREE_LIMIT if plan == "free" else "∞"
     text = (
         f"LinkedIn: {li}\n"
-        f"X: {x}\n\n"
+        f"X: {x}\n"
+        f"Telegram channel: {ch}\n\n"
         f"Plan: {plan} ({used}/{limit} posts this month)"
     )
     telegram.send_message(chat_id, text, reply_markup=connect_keyboard(user))
@@ -119,11 +123,40 @@ def cmd_disconnect(chat_id: int, tg_id: int):
         rows.append([("Disconnect LinkedIn", "cb:disc:linkedin")])
     if user.get("x_access"):
         rows.append([("Disconnect X", "cb:disc:x")])
+    if user.get("tg_channel_id"):
+        rows.append([("Disconnect Telegram channel", "cb:disc:telegram")])
     if not rows:
         telegram.send_message(chat_id, "Nothing to disconnect.")
         return
     rows.append([("Cancel", "cb:cancel")])
     telegram.send_message(chat_id, "What do you want to disconnect?", reply_markup=telegram.inline_kb(rows))
+
+
+def cmd_setchannel(chat_id: int, tg_id: int, arg: str):
+    arg = (arg or "").strip()
+    if not arg:
+        telegram.send_message(chat_id, "Usage: /setchannel @yourchannel")
+        return
+    if not arg.startswith("@") and not arg.lstrip("-").isdigit():
+        arg = "@" + arg
+    chat = telegram.get_chat(arg)
+    if not chat.get("ok"):
+        telegram.send_message(chat_id, f"Couldn't find that channel. Make sure I'm an admin there.\n{chat.get('error','')[:200]}")
+        return
+    info = chat["result"]
+    ch_id = info["id"]
+    ch_title = info.get("title") or info.get("username") or str(ch_id)
+    me = telegram.get_me()
+    if not me.get("ok"):
+        telegram.send_message(chat_id, "Couldn't verify bot identity.")
+        return
+    bot_id = me["result"]["id"]
+    member = telegram.get_chat_member(ch_id, bot_id)
+    if not member.get("ok") or member["result"].get("status") not in ("administrator", "creator"):
+        telegram.send_message(chat_id, "I'm not an admin in that channel. Add me as an admin with 'Post messages' permission, then retry.")
+        return
+    db.update_user(tg_id, tg_channel_id=ch_id, tg_channel_name=ch_title)
+    telegram.send_message(chat_id, f"✅ Connected channel: {ch_title}")
 
 
 def handle_text(chat_id: int, tg_id: int, text: str, message_id: int):
@@ -184,6 +217,13 @@ def handle_callback(cb: dict):
                 "Tap to connect LinkedIn (opens in your browser):",
                 reply_markup=telegram.inline_kb([[("Connect LinkedIn", url)]]),
             )
+        elif provider == "telegram":
+            telegram.send_message(
+                chat_id,
+                "To connect a Telegram channel:\n\n"
+                "1. Add @PostrAIBot as an admin to your channel (with 'Post messages' permission)\n"
+                "2. Send me: /setchannel @yourchannel",
+            )
         elif provider == "x":
             verifier, challenge = xlib.gen_pkce()
             state = db.make_oauth_state(tg_id, "x", verifier=verifier)
@@ -204,6 +244,9 @@ def handle_callback(cb: dict):
         elif provider == "x":
             db.update_user(tg_id, x_access="", x_refresh="", x_user_id="", x_username="", x_expires_at=0)
             telegram.edit_message(chat_id, message_id, "X disconnected.", reply_markup={"inline_keyboard": []})
+        elif provider == "telegram":
+            db.update_user(tg_id, tg_channel_id="", tg_channel_name="")
+            telegram.edit_message(chat_id, message_id, "Telegram channel disconnected.", reply_markup={"inline_keyboard": []})
         telegram.answer_callback(cb_id)
         return
 
@@ -263,6 +306,12 @@ def handle_callback(cb: dict):
             else:
                 r = xlib.create_tweet(access, draft["x"])
                 results.append(("X", r))
+        if user.get("tg_channel_id"):
+            try:
+                rr = telegram.send_message(user["tg_channel_id"], draft.get("linkedin") or draft.get("x") or "")
+                results.append(("Telegram channel", {"ok": rr.get("ok", False), "error": rr.get("error", "")}))
+            except Exception as e:
+                results.append(("Telegram channel", {"ok": False, "error": str(e)[:200]}))
         lines = []
         for name, r in results:
             if r.get("ok"):
@@ -314,6 +363,8 @@ class handler(BaseHTTPRequestHandler):
             cmd_status(chat_id, tg_id)
         elif text.startswith("/disconnect"):
             cmd_disconnect(chat_id, tg_id)
+        elif text.startswith("/setchannel"):
+            cmd_setchannel(chat_id, tg_id, text[len("/setchannel"):].strip())
         elif text.startswith("/help"):
             telegram.send_message(
                 chat_id,
