@@ -49,17 +49,60 @@ def get_userinfo(access_token: str) -> dict:
         return json.loads(r.read())
 
 
-def create_post(access_token: str, author_urn: str, text: str) -> dict:
+def upload_image(access_token: str, owner_urn: str, image_bytes: bytes) -> str:
+    """Register + upload an image. Returns asset URN."""
+    reg_body = json.dumps({
+        "registerUploadRequest": {
+            "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+            "owner": owner_urn,
+            "serviceRelationships": [{
+                "relationshipType": "OWNER",
+                "identifier": "urn:li:userGeneratedContent",
+            }],
+        }
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.linkedin.com/v2/assets?action=registerUpload",
+        data=reg_body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:
+        reg = json.loads(r.read())
+    value = reg["value"]
+    upload_url = value["uploadMechanism"][
+        "com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest"
+    ]["uploadUrl"]
+    asset = value["asset"]
+    put_req = urllib.request.Request(
+        upload_url,
+        data=image_bytes,
+        method="PUT",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    with urllib.request.urlopen(put_req, timeout=60) as r:
+        r.read()
+    return asset
+
+
+def create_post(access_token: str, author_urn: str, text: str, asset_urn: str | None = None) -> dict:
     """author_urn looks like 'urn:li:person:abc123'."""
+    share_content = {
+        "shareCommentary": {"text": text},
+        "shareMediaCategory": "NONE",
+    }
+    if asset_urn:
+        share_content["shareMediaCategory"] = "IMAGE"
+        share_content["media"] = [{
+            "status": "READY",
+            "media": asset_urn,
+        }]
     body = json.dumps({
         "author": author_urn,
         "lifecycleState": "PUBLISHED",
-        "specificContent": {
-            "com.linkedin.ugc.ShareContent": {
-                "shareCommentary": {"text": text},
-                "shareMediaCategory": "NONE",
-            }
-        },
+        "specificContent": {"com.linkedin.ugc.ShareContent": share_content},
         "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
     }).encode()
     req = urllib.request.Request(
