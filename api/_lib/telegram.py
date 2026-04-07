@@ -43,6 +43,18 @@ def answer_callback(callback_id: str, text: str = "") -> dict:
     return _post("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
 
 
+def get_chat(chat_id_or_username) -> dict:
+    return _post("getChat", {"chat_id": chat_id_or_username})
+
+
+def get_chat_member(chat_id, user_id: int) -> dict:
+    return _post("getChatMember", {"chat_id": chat_id, "user_id": user_id})
+
+
+def get_me() -> dict:
+    return _post("getMe", {})
+
+
 def inline_kb(rows: list[list[tuple[str, str]]]) -> dict:
     return {
         "inline_keyboard": [
