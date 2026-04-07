@@ -1,15 +1,15 @@
 {
-        "version": 2,
-        "builds": [
-                  {
-                              "src": "api/webhook.py",
-                              "use": "@vercel/python"
-                  }
-        ],
-        "routes": [
-                  {
-                              "src": "/api/webhook",
-                              "dest": "/api/webhook.py"
-                  }
-        ]
+  "version": 2,
+  "builds": [
+    { "src": "api/webhook.py", "use": "@vercel/python" },
+    { "src": "api/oauth_linkedin.py", "use": "@vercel/python" },
+    { "src": "api/oauth_x.py", "use": "@vercel/python" },
+    { "src": "landing/index.html", "use": "@vercel/static" }
+  ],
+  "routes": [
+    { "src": "/api/webhook", "dest": "/api/webhook.py" },
+    { "src": "/api/oauth/linkedin/callback", "dest": "/api/oauth_linkedin.py" },
+    { "src": "/api/oauth/x/callback", "dest": "/api/oauth_x.py" },
+    { "src": "/", "dest": "/landing/index.html" }
+  ]
 }
