@@ -50,73 +50,74 @@ def get_userinfo(access_token: str) -> dict:
 
 
 def upload_image(access_token: str, owner_urn: str, image_bytes: bytes) -> str:
-    """Register + upload an image. Returns asset URN."""
-    reg_body = json.dumps({
-        "registerUploadRequest": {
-            "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+    """Initialize upload + PUT image via REST Images API. Returns image URN."""
+    init_body = json.dumps({
+        "initializeUploadRequest": {
             "owner": owner_urn,
-            "serviceRelationships": [{
-                "relationshipType": "OWNER",
-                "identifier": "urn:li:userGeneratedContent",
-            }],
         }
     }).encode()
     req = urllib.request.Request(
-        "https://api.linkedin.com/v2/assets?action=registerUpload",
-        data=reg_body,
+        "https://api.linkedin.com/rest/images?action=initializeUpload",
+        data=init_body,
         headers={
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
+            "LinkedIn-Version": "202401",
         },
     )
     with urllib.request.urlopen(req, timeout=20) as r:
-        reg = json.loads(r.read())
-    value = reg["value"]
-    upload_url = value["uploadMechanism"][
-        "com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest"
-    ]["uploadUrl"]
-    asset = value["asset"]
+        resp = json.loads(r.read())
+    value = resp["value"]
+    upload_url = value["uploadUrl"]
+    image_urn = value["image"]
     put_req = urllib.request.Request(
         upload_url,
         data=image_bytes,
         method="PUT",
-        headers={"Authorization": f"Bearer {access_token}"},
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/octet-stream",
+        },
     )
     with urllib.request.urlopen(put_req, timeout=60) as r:
         r.read()
-    return asset
+    return image_urn
 
 
 def create_post(access_token: str, author_urn: str, text: str, asset_urn: str | None = None) -> dict:
-    """author_urn looks like 'urn:li:person:abc123'."""
-    share_content = {
-        "shareCommentary": {"text": text},
-        "shareMediaCategory": "NONE",
+    """Create a post via REST Posts API. asset_urn is an image URN from upload_image."""
+    payload = {
+        "author": author_urn,
+        "commentary": text,
+        "visibility": "PUBLIC",
+        "distribution": {
+            "feedDistribution": "MAIN_FEED",
+            "targetEntities": [],
+            "thirdPartyDistributionChannels": [],
+        },
+        "lifecycleState": "PUBLISHED",
     }
     if asset_urn:
-        share_content["shareMediaCategory"] = "IMAGE"
-        share_content["media"] = [{
-            "status": "READY",
-            "media": asset_urn,
-        }]
-    body = json.dumps({
-        "author": author_urn,
-        "lifecycleState": "PUBLISHED",
-        "specificContent": {"com.linkedin.ugc.ShareContent": share_content},
-        "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
-    }).encode()
+        payload["content"] = {
+            "media": {
+                "title": "Image",
+                "id": asset_urn,
+            }
+        }
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
-        "https://api.linkedin.com/v2/ugcPosts",
+        "https://api.linkedin.com/rest/posts",
         data=body,
         headers={
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
+            "LinkedIn-Version": "202401",
             "X-Restli-Protocol-Version": "2.0.0",
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read() or b"{}")
-            return {"ok": True, "id": data.get("id") or r.headers.get("x-restli-id")}
+            post_id = r.headers.get("x-restli-id", "")
+            return {"ok": True, "id": post_id}
     except urllib.error.HTTPError as e:
         return {"ok": False, "error": e.read().decode()[:400]}
