@@ -1,5 +1,6 @@
-"""Postr AI — Telegram webhook (multi-tenant). Per-platform draft messages + images."""
+"""Postr AI — Telegram webhook (multi-tenant). Per-platform draft messages + images + scheduling."""
 import json
+import os
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler
@@ -7,7 +8,7 @@ from http.server import BaseHTTPRequestHandler
 from api._lib import db, ai, telegram, linkedin, x as xlib
 from api._lib.crypto import decrypt, encrypt
 
-VERSION = "postr-ai-1.2.0"
+VERSION = "postr-ai-1.3.0"
 BOT_USERNAME = "PostrAIBot"
 
 PLATFORMS = ("linkedin", "x", "tg")
@@ -28,9 +29,12 @@ def connect_keyboard(user: dict) -> dict:
     return telegram.inline_kb(rows)
 
 
+STRIPE_LINK = os.environ.get("STRIPE_PAYMENT_LINK", "")
+
+
 def platform_keyboard(platform: str) -> dict:
     return telegram.inline_kb([
-        [(f"📤 Post to {LABEL[platform]}", f"cb:post:{platform}")],
+        [(f"📤 Post to {LABEL[platform]}", f"cb:post:{platform}"), (f"⏰ Schedule", f"cb:sched:{platform}")],
         [("✨ AI rewrite", f"cb:ai:{platform}"), ("✕ Cancel", f"cb:cancel:{platform}")],
     ])
 
@@ -297,6 +301,69 @@ def handle_callback(cb):
             telegram.send_message(chat_id, f"AI rewrite failed: {str(e)[:200]}")
         return
 
+    if data.startswith("cb:sched:") and not data.startswith("cb:schedset:"):
+        platform = data.split(":")[2]
+        draft = db.get_draft(tg_id)
+        if not draft:
+            telegram.answer_callback(cb_id, "Draft expired")
+            return
+        telegram.answer_callback(cb_id)
+        telegram.edit_message(
+            chat_id,
+            message_id,
+            format_platform_message(platform, draft.get(platform, ""), bool(draft.get("image_file_id")))
+            + "\n\n⏰ When should this post go out?",
+            reply_markup=telegram.inline_kb([
+                [("1 hour", f"cb:schedset:{platform}:60"), ("3 hours", f"cb:schedset:{platform}:180")],
+                [("6 hours", f"cb:schedset:{platform}:360"), ("12 hours", f"cb:schedset:{platform}:720")],
+                [("Tomorrow 9 AM", f"cb:schedset:{platform}:t9"), ("Cancel", f"cb:cancel:{platform}")],
+            ]),
+        )
+        return
+
+    if data.startswith("cb:schedset:"):
+        parts = data.split(":")
+        platform = parts[2]
+        offset_raw = parts[3]
+        draft = db.get_draft(tg_id)
+        if not draft:
+            telegram.answer_callback(cb_id, "Draft expired")
+            return
+        user = db.get_user(tg_id)
+        if not user:
+            telegram.answer_callback(cb_id, "Not signed in")
+            return
+        now = int(time.time())
+        if offset_raw == "t9":
+            # Tomorrow 9 AM UTC (user can adjust later if needed)
+            tomorrow = now + 86400
+            day_start = tomorrow - (tomorrow % 86400)
+            run_at = day_start + 9 * 3600
+        else:
+            run_at = now + int(offset_raw) * 60
+        job_id = f"sj:{tg_id}:{platform}:{run_at}"
+        payload = {
+            "tg_id": tg_id,
+            "chat_id": chat_id,
+            "platform": platform,
+            "text": draft.get(platform, ""),
+            "image_file_id": draft.get("image_file_id", ""),
+        }
+        db.schedule_job(job_id, run_at, payload)
+        delta = run_at - now
+        if delta >= 3600:
+            when = f"{delta // 3600}h {(delta % 3600) // 60}m"
+        else:
+            when = f"{delta // 60}m"
+        telegram.edit_message(
+            chat_id,
+            message_id,
+            f"⏰ Scheduled for {LABEL[platform]} in {when}.",
+            reply_markup={"inline_keyboard": []},
+        )
+        telegram.answer_callback(cb_id, "Scheduled!")
+        return
+
     if data.startswith("cb:post:"):
         platform = data.split(":")[2]
         draft = db.get_draft(tg_id)
@@ -310,11 +377,14 @@ def handle_callback(cb):
         allowed, used, limit = db.check_and_increment_quota(tg_id)
         if not allowed:
             telegram.answer_callback(cb_id, "Free limit reached")
+            upgrade_rows = []
+            if STRIPE_LINK:
+                upgrade_rows = [[("⚡ Upgrade to Pro", STRIPE_LINK)]]
             telegram.edit_message(
                 chat_id,
                 message_id,
-                f"You've used all {limit} free posts this month.",
-                reply_markup={"inline_keyboard": []},
+                f"You've used all {limit} free posts this month.\n\nUpgrade to Pro for unlimited posts!",
+                reply_markup=telegram.inline_kb(upgrade_rows) if upgrade_rows else {"inline_keyboard": []},
             )
             return
         try:
