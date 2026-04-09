@@ -80,18 +80,26 @@ def get_me(access_token: str) -> dict:
 
 
 def upload_media(access_token: str, image_bytes: bytes, mime: str = "image/jpeg") -> str:
-    """Upload media via v2 endpoint. Returns media_id string."""
+    """Upload media via v1.1 simple upload (base64). Returns media_id string."""
+    media_data = base64.b64encode(image_bytes).decode()
     boundary = "----postrai" + secrets.token_hex(8)
-    filename = "image.jpg" if "jpeg" in mime else "image.png"
-    pre = (
+    parts = []
+    # media_data field (base64)
+    parts.append(
         f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="media"; filename="{filename}"\r\n'
-        f"Content-Type: {mime}\r\n\r\n"
-    ).encode()
-    post = f"\r\n--{boundary}--\r\n".encode()
-    body = pre + image_bytes + post
+        f'Content-Disposition: form-data; name="media_data"\r\n\r\n'
+        f"{media_data}\r\n"
+    )
+    # media_category field
+    parts.append(
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="media_category"\r\n\r\n'
+        f"tweet_image\r\n"
+    )
+    body_str = "".join(parts) + f"--{boundary}--\r\n"
+    body = body_str.encode()
     req = urllib.request.Request(
-        "https://api.x.com/2/media/upload",
+        "https://upload.twitter.com/1.1/media/upload.json",
         data=body,
         headers={
             "Authorization": f"Bearer {access_token}",
@@ -100,7 +108,7 @@ def upload_media(access_token: str, image_bytes: bytes, mime: str = "image/jpeg"
     )
     with urllib.request.urlopen(req, timeout=60) as r:
         data = json.loads(r.read())
-    return str(data.get("data", {}).get("id") or data.get("media_id_string") or data.get("id"))
+    return str(data.get("media_id_string") or data.get("media_id"))
 
 
 def create_tweet(access_token: str, text: str, media_id: str | None = None) -> dict:
