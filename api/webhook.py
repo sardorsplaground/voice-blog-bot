@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler
 from api._lib import db, ai, telegram, linkedin, x as xlib
 from api._lib.crypto import decrypt, encrypt
 
-VERSION = "postr-ai-1.3.0"
+VERSION = "postr-ai-1.3.1"
 BOT_USERNAME = "PostrAIBot"
 
 PLATFORMS = ("linkedin", "x", "tg")
@@ -30,6 +30,7 @@ def connect_keyboard(user: dict) -> dict:
 
 
 STRIPE_LINK = os.environ.get("STRIPE_PAYMENT_LINK", "")
+ADMIN_TG_IDS = set(filter(None, os.environ.get("ADMIN_TG_IDS", "").split(",")))
 
 
 def platform_keyboard(platform: str) -> dict:
@@ -374,7 +375,8 @@ def handle_callback(cb):
         if not user:
             telegram.answer_callback(cb_id, "Not signed in")
             return
-        allowed, used, limit = db.check_and_increment_quota(tg_id)
+        is_admin = str(tg_id) in ADMIN_TG_IDS
+        allowed, used, limit = (True, 0, 999) if is_admin else db.check_and_increment_quota(tg_id)
         if not allowed:
             telegram.answer_callback(cb_id, "Free limit reached")
             upgrade_rows = []
