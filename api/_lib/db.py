@@ -96,6 +96,68 @@ FREE_LIMIT = 10
 PERIOD_SECONDS = 30 * 24 * 3600
 
 
+def _post_req(body: list) -> Any:
+    """Pipeline / single command via POST (needed for ZADD, ZRANGEBYSCORE etc.)."""
+    if not URL or not TOKEN:
+        raise RuntimeError("UPSTASH_REDIS_REST_URL/TOKEN not set")
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        URL,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read()).get("result")
+
+
+# ---- Scheduled jobs ----
+SCHEDULE_KEY = "schedule:jobs"
+
+
+def schedule_job(job_id: str, run_at: int, payload: Dict[str, Any]) -> None:
+    """Add a scheduled job: sorted set entry + payload key."""
+    kv_set(f"job:{job_id}", json.dumps(payload), ex=7 * 86400)
+    _post_req(["ZADD", SCHEDULE_KEY, str(run_at), job_id])
+
+
+def get_due_jobs(now: Optional[int] = None) -> list[tuple[str, Dict[str, Any]]]:
+    """Return list of (job_id, payload) for jobs due now."""
+    now = now or int(time.time())
+    result = _post_req(["ZRANGEBYSCORE", SCHEDULE_KEY, "0", str(now)])
+    if not result:
+        return []
+    jobs = []
+    for job_id in result:
+        raw = kv_get(f"job:{job_id}")
+        if raw:
+            jobs.append((job_id, json.loads(raw)))
+    return jobs
+
+
+def remove_job(job_id: str) -> None:
+    _post_req(["ZREM", SCHEDULE_KEY, job_id])
+    kv_del(f"job:{job_id}")
+
+
+def get_user_jobs(tg_id: int) -> list[tuple[str, int, Dict[str, Any]]]:
+    """Return scheduled jobs for a user: (job_id, run_at, payload)."""
+    result = _post_req(["ZRANGEBYSCORE", SCHEDULE_KEY, "0", "+inf", "WITHSCORES"])
+    if not result:
+        return []
+    jobs = []
+    for i in range(0, len(result), 2):
+        job_id = result[i]
+        score = int(float(result[i + 1]))
+        if job_id.startswith(f"sj:{tg_id}:"):
+            raw = kv_get(f"job:{job_id}")
+            if raw:
+                jobs.append((job_id, score, json.loads(raw)))
+    return jobs
+
+
 def check_and_increment_quota(tg_id: int) -> tuple[bool, int, int]:
     """Returns (allowed, used_after, limit)."""
     user = get_user(tg_id) or {}
