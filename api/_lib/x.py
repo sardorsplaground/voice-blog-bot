@@ -96,7 +96,10 @@ def upload_media(access_token: str, image_bytes: bytes, mime: str = "image/jpeg"
         f'Content-Disposition: form-data; name="media_category"\r\n\r\n'
         f"tweet_image\r\n"
     )
-    body_str = "".join(parts) + f"--{boundary}--\r\n"
+    body_str = "".join(parts) +         f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="media_type"\r\n\r\n'
+        f"{mime}\r\n"
+        f"--{boundary}--\r\n"
     body = body_str.encode()
     req = urllib.request.Request(
         "https://api.x.com/2/media/upload",
