@@ -1,4 +1,4 @@
-"""Postr AI â Telegram webhook (multi-tenant). Per-platform draft messages + images + scheduling."""
+"""Postr AI — Telegram webhook (multi-tenant). Per-platform draft messages + images + scheduling."""
 import json
 import os
 import time
@@ -13,19 +13,19 @@ BOT_USERNAME = "PostrAIBot"
 
 PLATFORMS = ("linkedin", "x", "tg")
 LABEL = {"linkedin": "LinkedIn", "x": "X", "tg": "Telegram channel"}
-EMOJI = {"linkedin": "ð", "x": "ð¦", "tg": "ð£"}
+EMOJI = {"linkedin": "🔗", "x": "🐦", "tg": "📣"}
 
 
 def connect_keyboard(user: dict) -> dict:
     rows = []
     if not user.get("li_token"):
-        rows.append([("ð Connect LinkedIn", "cb:connect:linkedin")])
+        rows.append([("🔗 Connect LinkedIn", "cb:connect:linkedin")])
     if not user.get("x_access"):
-        rows.append([("ð¦ Connect X", "cb:connect:x")])
+        rows.append([("🐦 Connect X", "cb:connect:x")])
     if not user.get("tg_channel_id") and (user.get("li_token") or user.get("x_access")):
-        rows.append([("ð£ Connect Telegram channel", "cb:connect:telegram")])
+        rows.append([("📣 Connect Telegram channel", "cb:connect:telegram")])
     if not rows:
-        rows = [[("â All connected â send me any text", "cb:noop")]]
+        rows = [[("✓ All connected — send me any text", "cb:noop")]]
     return telegram.inline_kb(rows)
 
 
@@ -35,14 +35,14 @@ ADMIN_TG_IDS = set(filter(None, os.environ.get("ADMIN_TG_IDS", "").split(",")))
 
 def platform_keyboard(platform: str) -> dict:
     return telegram.inline_kb([
-        [(f"ð¤ Post to {LABEL[platform]}", f"cb:post:{platform}"), (f"â° Schedule", f"cb:sched:{platform}")],
-        [("â¨ AI rewrite", f"cb:ai:{platform}"), ("â Cancel", f"cb:cancel:{platform}")],
+        [(f"📤 Post to {LABEL[platform]}", f"cb:post:{platform}"), (f"⏰ Schedule", f"cb:sched:{platform}")],
+        [("✨ AI rewrite", f"cb:ai:{platform}"), ("✕ Cancel", f"cb:cancel:{platform}")],
     ])
 
 
 def format_platform_message(platform: str, text: str, has_image: bool = False) -> str:
-    img = " ð¼" if has_image else ""
-    return f"âââ {EMOJI[platform]} {LABEL[platform]}{img} âââ\n\n{text}"
+    img = " 🖼" if has_image else ""
+    return f"━━━ {EMOJI[platform]} {LABEL[platform]}{img} ━━━\n\n{text}"
 
 
 def ensure_x_token(user: dict):
@@ -73,7 +73,7 @@ def cmd_start(chat_id, tg_id, first_name=""):
     user = db.update_user(tg_id, first_name=first_name)
     name = first_name or "there"
     text = (
-        f"ð Hey {name}, I'm Postr AI.\n\n"
+        f"👋 Hey {name}, I'm Postr AI.\n\n"
         "Send me any text (or a photo with a caption) and I'll prep a separate draft for each connected platform "
         "(LinkedIn, X, Telegram channel). For each one you can post it, AI-rewrite it, or cancel independently.\n\n"
         "First, connect your accounts:"
@@ -83,12 +83,12 @@ def cmd_start(chat_id, tg_id, first_name=""):
 
 def cmd_status(chat_id, tg_id):
     user = db.get_user(tg_id) or {}
-    li = "â " + user.get("li_name", "connected") if user.get("li_token") else "â not connected"
-    x = "â @" + user.get("x_username", "") if user.get("x_access") else "â not connected"
-    ch = "â " + user.get("tg_channel_name", "") if user.get("tg_channel_id") else "â not connected"
+    li = "✓ " + user.get("li_name", "connected") if user.get("li_token") else "— not connected"
+    x = "✓ @" + user.get("x_username", "") if user.get("x_access") else "— not connected"
+    ch = "✓ " + user.get("tg_channel_name", "") if user.get("tg_channel_id") else "— not connected"
     used = user.get("posts_used", 0)
     plan = user.get("plan", "free")
-    limit = db.FREE_LIMIT if plan == "free" else "â"
+    limit = db.FREE_LIMIT if plan == "free" else "∞"
     text = (
         f"LinkedIn: {li}\n"
         f"X: {x}\n"
@@ -138,7 +138,7 @@ def cmd_setchannel(chat_id, tg_id, arg):
         telegram.send_message(chat_id, "I'm not an admin in that channel. Add me as an admin with 'Post messages' permission, then retry.")
         return
     db.update_user(tg_id, tg_channel_id=ch_id, tg_channel_name=ch_title)
-    telegram.send_message(chat_id, f"â Connected channel: {ch_title}")
+    telegram.send_message(chat_id, f"✅ Connected channel: {ch_title}")
 
 
 def handle_text(chat_id, tg_id, text, message_id, image_file_id: str = ""):
@@ -156,7 +156,7 @@ def handle_text(chat_id, tg_id, text, message_id, image_file_id: str = ""):
         )
         return
     if len(text) > 4000:
-        telegram.send_message(chat_id, "That's too long â keep it under 4000 characters.")
+        telegram.send_message(chat_id, "That's too long — keep it under 4000 characters.")
         return
     draft = ai.format_variants(text)
     draft["source"] = text
@@ -216,7 +216,6 @@ def _post_to_platform(platform, user, draft):
         tg_text = draft.get("tg", "")
         # Add "posted via @PostrAIBot" footer for free-plan users
         if user.get("plan", "free") == "free":
-            ch_name = user.get("tg_channel_name", "")
             footer = "\n\nPosted via @PostrAIBot"
             tg_text = tg_text + footer
         if image_file_id:
@@ -319,7 +318,7 @@ def handle_callback(cb):
             chat_id,
             message_id,
             format_platform_message(platform, draft.get(platform, ""), bool(draft.get("image_file_id")))
-            + "\n\nâ° When should this post go out?",
+            + "\n\n⏰ When should this post go out?",
             reply_markup=telegram.inline_kb([
                 [("1 hour", f"cb:schedset:{platform}:60"), ("3 hours", f"cb:schedset:{platform}:180")],
                 [("6 hours", f"cb:schedset:{platform}:360"), ("12 hours", f"cb:schedset:{platform}:720")],
@@ -365,7 +364,7 @@ def handle_callback(cb):
         telegram.edit_message(
             chat_id,
             message_id,
-            f"â° Scheduled for {LABEL[platform]} in {when}.",
+            f"⏰ Scheduled for {LABEL[platform]} in {when}.",
             reply_markup={"inline_keyboard": []},
         )
         telegram.answer_callback(cb_id, "Scheduled!")
@@ -387,7 +386,7 @@ def handle_callback(cb):
             telegram.answer_callback(cb_id, "Free limit reached")
             upgrade_rows = []
             if STRIPE_LINK:
-                upgrade_rows = [[("â¡ Upgrade to Pro", STRIPE_LINK)]]
+                upgrade_rows = [[("⚡ Upgrade to Pro", STRIPE_LINK)]]
             telegram.edit_message(
                 chat_id,
                 message_id,
@@ -403,7 +402,7 @@ def handle_callback(cb):
             telegram.edit_message(
                 chat_id,
                 message_id,
-                f"â Posted to {LABEL[platform]}",
+                f"✅ Posted to {LABEL[platform]}",
                 reply_markup={"inline_keyboard": []},
             )
             telegram.answer_callback(cb_id, "Posted")
@@ -411,7 +410,7 @@ def handle_callback(cb):
             telegram.edit_message(
                 chat_id,
                 message_id,
-                format_platform_message(platform, draft.get(platform, ""), bool(draft.get("image_file_id"))) + f"\n\nâ {r.get('error','unknown error')}",
+                format_platform_message(platform, draft.get(platform, ""), bool(draft.get("image_file_id"))) + f"\n\n❌ {r.get('error','unknown error')}",
                 reply_markup=platform_keyboard(platform),
             )
             telegram.answer_callback(cb_id, "Failed")
@@ -471,10 +470,10 @@ class handler(BaseHTTPRequestHandler):
             telegram.send_message(
                 chat_id,
                 "Send me any text (or a photo with a caption) and I'll prep a separate draft for each connected platform.\n\n"
-                "/start â welcome + connect accounts\n"
-                "/status â see your connections and usage\n"
-                "/disconnect â disconnect an account\n"
-                "/setchannel @name â connect a Telegram channel",
+                "/start — welcome + connect accounts\n"
+                "/status — see your connections and usage\n"
+                "/disconnect — disconnect an account\n"
+                "/setchannel @name — connect a Telegram channel",
             )
         elif text.startswith("/"):
             telegram.send_message(chat_id, "Unknown command. Try /help.")
