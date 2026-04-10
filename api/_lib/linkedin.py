@@ -62,7 +62,7 @@ def upload_image(access_token: str, owner_urn: str, image_bytes: bytes) -> str:
         headers={
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
-            "LinkedIn-Version": "202401",
+            "LinkedIn-Version": "202601",
         },
     )
     with urllib.request.urlopen(req, timeout=20) as r:
@@ -111,7 +111,7 @@ def create_post(access_token: str, author_urn: str, text: str, asset_urn: str | 
         headers={
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
-            "LinkedIn-Version": "202401",
+            "LinkedIn-Version": "202601",
             "X-Restli-Protocol-Version": "2.0.0",
         },
     )
