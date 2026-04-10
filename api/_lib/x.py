@@ -99,7 +99,7 @@ def upload_media(access_token: str, image_bytes: bytes, mime: str = "image/jpeg"
     body_str = "".join(parts) + f"--{boundary}--\r\n"
     body = body_str.encode()
     req = urllib.request.Request(
-        "https://upload.twitter.com/1.1/media/upload.json",
+        "https://api.x.com/2/media/upload",
         data=body,
         headers={
             "Authorization": f"Bearer {access_token}",
@@ -108,7 +108,8 @@ def upload_media(access_token: str, image_bytes: bytes, mime: str = "image/jpeg"
     )
     with urllib.request.urlopen(req, timeout=60) as r:
         data = json.loads(r.read())
-    return str(data.get("media_id_string") or data.get("media_id"))
+    mid = data.get("data", {}).get("id") or data.get("media_id_string") or data.get("media_id")
+    return str(mid)
 
 
 def create_tweet(access_token: str, text: str, media_id: str | None = None) -> dict:
