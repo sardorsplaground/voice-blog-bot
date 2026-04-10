@@ -30,7 +30,7 @@ def exchange_code(code: str) -> dict:
         "redirect_uri": REDIRECT_URI,
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
-    }).encode()
+    }, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         "https://www.linkedin.com/oauth/v2/accessToken",
         data=body,
@@ -61,7 +61,7 @@ def upload_image(access_token: str, owner_urn: str, image_bytes: bytes) -> str:
         data=init_body,
         headers={
             "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
+            "Content-Type": "application/json; charset=UTF-8",
             "LinkedIn-Version": "202601",
         },
     )
@@ -104,13 +104,13 @@ def create_post(access_token: str, author_urn: str, text: str, asset_urn: str | 
                 "id": asset_urn,
             }
         }
-    body = json.dumps(payload).encode()
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         "https://api.linkedin.com/rest/posts",
         data=body,
         headers={
             "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
+            "Content-Type": "application/json; charset=UTF-8",
             "LinkedIn-Version": "202601",
             "X-Restli-Protocol-Version": "2.0.0",
         },
