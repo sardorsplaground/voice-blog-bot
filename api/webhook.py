@@ -8,12 +8,73 @@ from http.server import BaseHTTPRequestHandler
 from api._lib import db, ai, telegram, linkedin, x as xlib, website
 from api._lib.crypto import decrypt, encrypt
 
-VERSION = "postr-ai-1.4.0"
+VERSION = "postr-ai-1.4.1"
 BOT_USERNAME = "PostrAIBot"
 
 PLATFORMS = ("linkedin", "x", "tg", "blog")
 LABEL = {"linkedin": "LinkedIn", "x": "X", "tg": "Telegram channel", "blog": "Website"}
 EMOJI = {"linkedin": "🔗", "x": "🐦", "tg": "📣", "blog": "🌐"}
+
+# Public base URL for the blog API (used to show users how to embed their feed).
+# Falls back to Vercel's auto-set VERCEL_URL, then to the known production host.
+_VERCEL_URL = os.environ.get("VERCEL_URL", "").strip()
+PUBLIC_BASE_URL = (
+    os.environ.get("PUBLIC_BASE_URL", "").strip()
+    or (f"https://{_VERCEL_URL}" if _VERCEL_URL else "")
+    or "https://voice-blog-bot.vercel.app"
+).rstrip("/")
+
+
+def _website_setup_text(tg_id: int) -> str:
+    """Markdown-formatted instructions for embedding the blog API on any site."""
+    base = PUBLIC_BASE_URL
+    feed = f"{base}/api/blog/posts/{tg_id}"
+    single = f"{base}/api/blog/post/{tg_id}/{{slug}}"
+    snippet = (
+        "<div id=\"postr-blog\"></div>\n"
+        "<script>\n"
+        f"fetch('{feed}')\n"
+        "  .then(r => r.json())\n"
+        "  .then(d => {\n"
+        "    document.getElementById('postr-blog').innerHTML =\n"
+        "      d.posts.map(p =>\n"
+        "        `<article>\n"
+        "           <h2>${p.title}</h2>\n"
+        "           <small>${new Date(p.published_at*1000).toLocaleDateString()}</small>\n"
+        "           <div>${p.content.replace(/\\n/g,'<br>')}</div>\n"
+        "         </article>`\n"
+        "      ).join('');\n"
+        "  });\n"
+        "</script>"
+    )
+    return (
+        "🌐 *Your Website Blog API*\n\n"
+        "Postr hosts your posts and exposes them via a public JSON API. "
+        "Add the snippet below to *any* website (WordPress, Webflow, plain HTML, Next.js, etc.) "
+        "to display them — platform-agnostic.\n\n"
+        "*Your personal feed (list):*\n"
+        f"`{feed}`\n\n"
+        "*Single post URL:*\n"
+        f"`{single}`\n\n"
+        "✅ CORS is enabled (`Access-Control-Allow-Origin: *`) so browsers on any domain can fetch directly.\n\n"
+        "*Copy-paste snippet for your site:*\n"
+        f"```html\n{snippet}\n```\n\n"
+        "*Query params for the list endpoint:*\n"
+        "• `limit` — default 10, max 50\n"
+        "• `offset` — default 0\n\n"
+        "*Response shape:*\n"
+        "`{posts: [{id, title, slug, content, tags, image_url, published_at, updated_at}], total, limit, offset}`\n\n"
+        f"Open your feed in a browser to test: {feed}"
+    )
+
+
+def cmd_website(chat_id, tg_id):
+    telegram.send_message(
+        chat_id,
+        _website_setup_text(tg_id),
+        parse_mode="Markdown",
+        reply_markup=telegram.inline_kb([[("🔗 Open my feed", f"{PUBLIC_BASE_URL}/api/blog/posts/{tg_id}")]]),
+    )
 
 
 def _blog_preview_text(blog: dict) -> str:
@@ -39,8 +100,11 @@ def connect_keyboard(user: dict) -> dict:
         rows.append([("🐦 Connect X", "cb:connect:x")])
     if not user.get("tg_channel_id") and (user.get("li_token") or user.get("x_access")):
         rows.append([("📣 Connect Telegram channel", "cb:connect:telegram")])
-    if not rows:
-        rows = [[("✓ All connected — send me any text", "cb:noop")]]
+    # Website API: always show — no OAuth, just instructions to embed on their site.
+    rows.append([("🌐 Website blog API", "cb:connect:website")])
+    if len(rows) == 1 and rows[0][0][1] == "cb:connect:website":
+        # Only website left to show — means all OAuth channels connected.
+        rows.insert(0, [("✓ All accounts connected — send me any text", "cb:noop")])
     return telegram.inline_kb(rows)
 
 
@@ -95,7 +159,9 @@ def cmd_start(chat_id, tg_id, first_name=""):
     text = (
         f"👋 Hey {name}, I'm Postr AI.\n\n"
         "Send me any text (or a photo with a caption) and I'll prep a separate draft for each connected platform "
-        "(LinkedIn, X, Telegram channel). For each one you can post it, AI-rewrite it, or cancel independently.\n\n"
+        "(LinkedIn, X, Telegram channel, your website). For each one you can post it, AI-rewrite it, or cancel independently.\n\n"
+        "Your website publishes via a platform-agnostic blog API — you get a personal feed URL + a snippet "
+        "you paste into any site (WordPress, Webflow, plain HTML, etc.). Tap 🌐 Website below to see it, or run /website anytime.\n\n"
         "First, connect your accounts:"
     )
     telegram.send_message(chat_id, text, reply_markup=connect_keyboard(user))
@@ -315,6 +381,8 @@ def handle_callback(cb):
                 "Tap to connect X (opens in your browser):",
                 reply_markup=telegram.inline_kb([[("Connect X", url)]]),
             )
+        elif provider == "website":
+            cmd_website(chat_id, tg_id)
         telegram.answer_callback(cb_id)
         return
 
@@ -449,13 +517,24 @@ def handle_callback(cb):
             r = {"ok": False, "error": str(e)[:200]}
         if r.get("ok"):
             success_text = f"✅ Posted to {LABEL[platform]}"
-            if platform == "blog" and r.get("path"):
-                success_text += f"\n\nAvailable at: {r['path']}"
+            extra_kb = None
+            if platform == "blog" and r.get("slug"):
+                feed_url = f"{PUBLIC_BASE_URL}/api/blog/posts/{tg_id}"
+                post_url = f"{PUBLIC_BASE_URL}/api/blog/post/{tg_id}/{r['slug']}"
+                success_text += (
+                    f"\n\n🌐 Live on your blog feed:\n{feed_url}\n\n"
+                    f"This specific post:\n{post_url}\n\n"
+                    "Run /website to get the snippet to embed this feed on your site."
+                )
+                extra_kb = telegram.inline_kb([
+                    [("📖 View post JSON", post_url)],
+                    [("🛠 Embed setup", "cb:connect:website")],
+                ])
             telegram.edit_message(
                 chat_id,
                 message_id,
                 success_text,
-                reply_markup={"inline_keyboard": []},
+                reply_markup=extra_kb or {"inline_keyboard": []},
             )
             telegram.answer_callback(cb_id, "Posted")
         else:
@@ -519,6 +598,8 @@ class handler(BaseHTTPRequestHandler):
             cmd_disconnect(chat_id, tg_id)
         elif text.startswith("/setchannel"):
             cmd_setchannel(chat_id, tg_id, text[len("/setchannel"):].strip())
+        elif text.startswith("/website") or text.startswith("/blog") or text.startswith("/api"):
+            cmd_website(chat_id, tg_id)
         elif text.startswith("/help"):
             telegram.send_message(
                 chat_id,
@@ -526,7 +607,8 @@ class handler(BaseHTTPRequestHandler):
                 "/start — welcome + connect accounts\n"
                 "/status — see your connections and usage\n"
                 "/disconnect — disconnect an account\n"
-                "/setchannel @name — connect a Telegram channel",
+                "/setchannel @name — connect a Telegram channel\n"
+                "/website — get your blog API URL + embed snippet for your site",
             )
         elif text.startswith("/"):
             telegram.send_message(chat_id, "Unknown command. Try /help.")
