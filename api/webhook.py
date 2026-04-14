@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler
 from api._lib import db, ai, telegram, linkedin, x as xlib, website
 from api._lib.crypto import decrypt, encrypt
 
-VERSION = "postr-ai-1.4.1"
+VERSION = "postr-ai-1.4.2"
 BOT_USERNAME = "PostrAIBot"
 
 PLATFORMS = ("linkedin", "x", "tg", "blog")
@@ -110,6 +110,92 @@ def connect_keyboard(user: dict) -> dict:
 
 STRIPE_LINK = os.environ.get("STRIPE_PAYMENT_LINK", "")
 ADMIN_TG_IDS = set(filter(None, os.environ.get("ADMIN_TG_IDS", "").split(",")))
+
+
+WHATS_NEW_TEXT = (
+    "🚀 *Here's everything we've added to Postr AI since the first launch:*\n\n"
+    "🎙️ Started with voice-message → AI draft → one-tap publish to *LinkedIn* and *X (Twitter)*.\n\n"
+    "Since then:\n\n"
+    "📢 *Telegram channel publishing* — post to your own channel alongside LinkedIn and X.\n\n"
+    "🖼️ *Image support* — attach a photo and it goes out to every platform.\n\n"
+    "⏰ *Scheduling* — queue posts for later instead of publishing immediately.\n\n"
+    "💳 *Pro tier via Stripe* — upgrade for higher limits and premium features.\n\n"
+    "🌍 *Full emoji & UTF-8 support* — your posts render correctly everywhere.\n\n"
+    "🌐 *Blog Publishing API* — every post is now also hosted as a JSON feed, so you own your content.\n\n"
+    "🛠️ *New /website command* — get a feed URL + copy-paste embed snippet to display your posts on any site (WordPress, Webflow, custom HTML). Platform-agnostic, CORS-enabled.\n\n"
+    "More shipping soon. 🔥"
+)
+
+
+def cmd_announce(chat_id: int, tg_id: int) -> None:
+    """Admin-only: broadcast the WHATS_NEW_TEXT to every user."""
+    if str(tg_id) not in ADMIN_TG_IDS:
+        telegram.send_message(chat_id, "⛔ Admin only.")
+        return
+    telegram.send_message(chat_id, "📣 Starting broadcast…")
+    try:
+        user_ids = db.scan_user_ids()
+    except Exception as e:
+        telegram.send_message(chat_id, f"❌ Failed to scan users: {e}")
+        return
+    sent = 0
+    blocked = 0
+    errors = 0
+    for uid in user_ids:
+        try:
+            res = telegram.send_message(uid, WHATS_NEW_TEXT, parse_mode="Markdown")
+            if res.get("ok"):
+                sent += 1
+            else:
+                err = str(res.get("error", "")).lower()
+                if any(k in err for k in ("blocked", "chat not found", "deactivated", "kicked")):
+                    blocked += 1
+                else:
+                    errors += 1
+        except Exception:
+            errors += 1
+        time.sleep(0.05)  # ~20/sec — under Telegram's 30/sec bot broadcast limit
+    telegram.send_message(
+        chat_id,
+        f"✅ Broadcast done.\nTotal users: {len(user_ids)}\nSent: {sent}\nBlocked/inactive: {blocked}\nErrors: {errors}",
+    )
+
+
+def cmd_stats(chat_id: int, tg_id: int) -> None:
+    """Admin-only: total users + DAU/WAU."""
+    if str(tg_id) not in ADMIN_TG_IDS:
+        telegram.send_message(chat_id, "⛔ Admin only.")
+        return
+    try:
+        ids = db.scan_user_ids()
+    except Exception as e:
+        telegram.send_message(chat_id, f"❌ Failed: {e}")
+        return
+    now = int(time.time())
+    dau = wau = mau = 0
+    for uid in ids:
+        u = db.get_user(uid)
+        ls = int(u.get("last_seen", 0) or 0)
+        if not ls:
+            continue
+        delta = now - ls
+        if delta <= 86400:
+            dau += 1
+        if delta <= 7 * 86400:
+            wau += 1
+        if delta <= 30 * 86400:
+            mau += 1
+    telegram.send_message(
+        chat_id,
+        (
+            f"📊 Postr AI stats\n\n"
+            f"Total users: {len(ids)}\n"
+            f"DAU (24h): {dau}\n"
+            f"WAU (7d): {wau}\n"
+            f"MAU (30d): {mau}\n\n"
+            f"Note: last_seen is recorded from v1.4.2 onward — older users only show up once they interact again."
+        ),
+    )
 
 
 def platform_keyboard(platform: str) -> dict:
@@ -600,6 +686,10 @@ class handler(BaseHTTPRequestHandler):
             cmd_setchannel(chat_id, tg_id, text[len("/setchannel"):].strip())
         elif text.startswith("/website") or text.startswith("/blog") or text.startswith("/api"):
             cmd_website(chat_id, tg_id)
+        elif text.startswith("/announce") or text.startswith("/broadcast"):
+            cmd_announce(chat_id, tg_id)
+        elif text.startswith("/stats") or text.startswith("/users"):
+            cmd_stats(chat_id, tg_id)
         elif text.startswith("/help"):
             telegram.send_message(
                 chat_id,

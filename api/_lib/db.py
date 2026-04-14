@@ -52,11 +52,44 @@ def save_user(tg_id: int, data: Dict[str, Any]) -> None:
     kv_set(user_key(tg_id), json.dumps(data))
 
 
+def scan_user_ids() -> list[int]:
+    """Scan all user:{tg_id} keys in Upstash and return the list of tg_ids."""
+    user_ids: list[int] = []
+    cursor = "0"
+    while True:
+        result = _post_req(["SCAN", cursor, "MATCH", "user:*", "COUNT", "500"])
+        if not result or len(result) < 2:
+            break
+        cursor = result[0]
+        keys = result[1] or []
+        for k in keys:
+            parts = k.split(":", 1)
+            if len(parts) == 2 and parts[0] == "user" and parts[1].lstrip("-").isdigit():
+                user_ids.append(int(parts[1]))
+        if cursor == "0":
+            break
+    return user_ids
+
+
+def user_stats(active_window_seconds: int = 86400) -> Dict[str, int]:
+    """Return {'total': N, 'active': M} where active = users with last_seen within window."""
+    ids = scan_user_ids()
+    now = int(time.time())
+    active = 0
+    for uid in ids:
+        u = get_user(uid)
+        ls = u.get("last_seen", 0)
+        if ls and (now - int(ls)) <= active_window_seconds:
+            active += 1
+    return {"total": len(ids), "active": active}
+
+
 def update_user(tg_id: int, **fields) -> Dict[str, Any]:
     user = get_user(tg_id)
     if not user:
         user = {"tg_id": tg_id, "created_at": int(time.time()), "plan": "free", "posts_used": 0, "posts_period_start": int(time.time())}
     user.update(fields)
+    user["last_seen"] = int(time.time())
     save_user(tg_id, user)
     return user
 
