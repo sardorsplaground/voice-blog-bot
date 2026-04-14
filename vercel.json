@@ -5,6 +5,9 @@
     { "src": "api/oauth_linkedin.py", "use": "@vercel/python" },
     { "src": "api/oauth_x.py", "use": "@vercel/python" },
     { "src": "api/cron.py", "use": "@vercel/python" },
+    { "src": "api/blog/publish.py", "use": "@vercel/python" },
+    { "src": "api/blog/posts.py", "use": "@vercel/python" },
+    { "src": "api/blog/post.py", "use": "@vercel/python" },
     { "src": "landing/index.html", "use": "@vercel/static" }
   ],
   "routes": [
@@ -12,6 +15,9 @@
     { "src": "/api/oauth/linkedin/callback", "dest": "/api/oauth_linkedin.py" },
     { "src": "/api/oauth/x/callback", "dest": "/api/oauth_x.py" },
     { "src": "/api/cron", "dest": "/api/cron.py" },
+    { "src": "/api/blog/publish", "dest": "/api/blog/publish.py" },
+    { "src": "/api/blog/posts/([^/]+)", "dest": "/api/blog/posts.py?user_id=$1" },
+    { "src": "/api/blog/post/([^/]+)/([^/]+)", "dest": "/api/blog/post.py?user_id=$1&slug=$2" },
     { "src": "/", "dest": "/landing/index.html" }
   ],
   "crons": [

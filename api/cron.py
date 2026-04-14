@@ -4,7 +4,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler
 
-from api._lib import db, telegram, linkedin, x as xlib
+from api._lib import db, telegram, linkedin, x as xlib, website
 from api._lib.crypto import decrypt, encrypt
 
 
@@ -85,10 +85,31 @@ def _post_job(job: dict) -> dict:
             rr = telegram.send_message(ch, text)
         return {"ok": rr.get("ok", False), "error": rr.get("error", "")}
 
+    if platform == "blog":
+        blog = job.get("blog") or {}
+        title = (blog.get("title") or "").strip() or "Untitled post"
+        content = (blog.get("content") or "").strip()
+        tags = blog.get("tags") or []
+        if not content:
+            return {"ok": False, "error": "no blog content"}
+        try:
+            post = website.publish_post(
+                user_id=user["tg_id"],
+                title=title,
+                content=content,
+                image_url=None,
+                tags=tags,
+            )
+            return {"ok": True, "result": post, "path": f"/api/blog/post/{post['user_id']}/{post['slug']}"}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            return {"ok": False, "error": f"blog publish: {str(e)[:200]}"}
+
     return {"ok": False, "error": "unknown platform"}
 
 
-LABEL = {"linkedin": "LinkedIn", "x": "X", "tg": "Telegram channel"}
+LABEL = {"linkedin": "LinkedIn", "x": "X", "tg": "Telegram channel", "blog": "Website"}
 
 
 def run_due_jobs():

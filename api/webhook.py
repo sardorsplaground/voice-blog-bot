@@ -5,15 +5,30 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler
 
-from api._lib import db, ai, telegram, linkedin, x as xlib
+from api._lib import db, ai, telegram, linkedin, x as xlib, website
 from api._lib.crypto import decrypt, encrypt
 
-VERSION = "postr-ai-1.3.1"
+VERSION = "postr-ai-1.4.0"
 BOT_USERNAME = "PostrAIBot"
 
-PLATFORMS = ("linkedin", "x", "tg")
-LABEL = {"linkedin": "LinkedIn", "x": "X", "tg": "Telegram channel"}
-EMOJI = {"linkedin": "🔗", "x": "🐦", "tg": "📣"}
+PLATFORMS = ("linkedin", "x", "tg", "blog")
+LABEL = {"linkedin": "LinkedIn", "x": "X", "tg": "Telegram channel", "blog": "Website"}
+EMOJI = {"linkedin": "🔗", "x": "🐦", "tg": "📣", "blog": "🌐"}
+
+
+def _blog_preview_text(blog: dict) -> str:
+    """Render a blog dict {title, content, tags} as a human-readable preview."""
+    if not isinstance(blog, dict):
+        blog = {}
+    title = (blog.get("title") or "Untitled").strip()
+    content = (blog.get("content") or "").strip()
+    tags = blog.get("tags") or []
+    preview = content if len(content) <= 1200 else content[:1197].rstrip() + "…"
+    parts = [f"📝 {title}", "", preview]
+    if tags:
+        parts.append("")
+        parts.append("Tags: " + ", ".join(f"#{t}" for t in tags))
+    return "\n".join(parts)
 
 
 def connect_keyboard(user: dict) -> dict:
@@ -40,9 +55,14 @@ def platform_keyboard(platform: str) -> dict:
     ])
 
 
-def format_platform_message(platform: str, text: str, has_image: bool = False) -> str:
+def format_platform_message(platform: str, text, has_image: bool = False) -> str:
     img = " 🖼" if has_image else ""
-    return f"━━━ {EMOJI[platform]} {LABEL[platform]}{img} ━━━\n\n{text}"
+    # Blog drafts are dicts; render them via _blog_preview_text.
+    if platform == "blog":
+        body = _blog_preview_text(text if isinstance(text, dict) else {"content": str(text or "")})
+    else:
+        body = str(text or "")
+    return f"━━━ {EMOJI[platform]} {LABEL[platform]}{img} ━━━\n\n{body}"
 
 
 def ensure_x_token(user: dict):
@@ -168,14 +188,19 @@ def handle_text(chat_id, tg_id, text, message_id, image_file_id: str = ""):
     if has_li: enabled.append("linkedin")
     if has_x: enabled.append("x")
     if has_tg: enabled.append("tg")
+    # Blog publishing is always available once any channel is connected —
+    # it doesn't require an OAuth connection (posts go to our own store).
+    enabled.append("blog")
     intro = f"Drafts ready for {len(enabled)} platform(s)"
     if image_file_id:
         intro += " (with image)"
     telegram.send_message(chat_id, intro + ". Review each below:")
     for p in enabled:
+        # For blog, pass the dict; for others, pass the string variant.
+        payload = draft.get("blog") if p == "blog" else draft.get(p, "")
         telegram.send_message(
             chat_id,
-            format_platform_message(p, draft.get(p, ""), bool(image_file_id)),
+            format_platform_message(p, payload, bool(image_file_id)),
             reply_markup=platform_keyboard(p),
         )
 
@@ -223,6 +248,27 @@ def _post_to_platform(platform, user, draft):
         else:
             rr = telegram.send_message(user["tg_channel_id"], tg_text)
         return {"ok": rr.get("ok", False), "error": rr.get("error", "")}
+
+    if platform == "blog":
+        blog = draft.get("blog") or {}
+        title = (blog.get("title") or "").strip() or "Untitled post"
+        content = (blog.get("content") or draft.get("source") or "").strip()
+        tags = blog.get("tags") or []
+        if not content:
+            return {"ok": False, "error": "no blog content to publish"}
+        try:
+            post = website.publish_post(
+                user_id=user["tg_id"],
+                title=title,
+                content=content,
+                image_url=None,  # v1: images-on-blog not yet supported from TG file IDs
+                tags=tags,
+            )
+            return {"ok": True, "result": post, "slug": post["slug"], "path": f"/api/blog/post/{post['user_id']}/{post['slug']}"}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            return {"ok": False, "error": f"website publish failed: {str(e)[:200]}"}
 
     return {"ok": False, "error": "unknown platform"}
 
@@ -294,13 +340,13 @@ def handle_callback(cb):
             return
         telegram.answer_callback(cb_id, "AI rewriting...")
         try:
-            new_text = ai.rewrite_one(draft["source"], platform)
-            draft[platform] = new_text
+            new_value = ai.rewrite_one(draft["source"], platform)
+            draft[platform] = new_value
             db.save_draft(tg_id, draft)
             telegram.edit_message(
                 chat_id,
                 message_id,
-                format_platform_message(platform, new_text, bool(draft.get("image_file_id"))),
+                format_platform_message(platform, new_value, bool(draft.get("image_file_id"))),
                 reply_markup=platform_keyboard(platform),
             )
         except Exception as e:
@@ -314,10 +360,11 @@ def handle_callback(cb):
             telegram.answer_callback(cb_id, "Draft expired")
             return
         telegram.answer_callback(cb_id)
+        sched_payload = draft.get("blog") if platform == "blog" else draft.get(platform, "")
         telegram.edit_message(
             chat_id,
             message_id,
-            format_platform_message(platform, draft.get(platform, ""), bool(draft.get("image_file_id")))
+            format_platform_message(platform, sched_payload, bool(draft.get("image_file_id")))
             + "\n\n⏰ When should this post go out?",
             reply_markup=telegram.inline_kb([
                 [("1 hour", f"cb:schedset:{platform}:60"), ("3 hours", f"cb:schedset:{platform}:180")],
@@ -352,9 +399,11 @@ def handle_callback(cb):
             "tg_id": tg_id,
             "chat_id": chat_id,
             "platform": platform,
-            "text": draft.get(platform, ""),
+            "text": "" if platform == "blog" else draft.get(platform, ""),
             "image_file_id": draft.get("image_file_id", ""),
         }
+        if platform == "blog":
+            payload["blog"] = draft.get("blog") or {}
         db.schedule_job(job_id, run_at, payload)
         delta = run_at - now
         if delta >= 3600:
@@ -399,18 +448,22 @@ def handle_callback(cb):
         except Exception as e:
             r = {"ok": False, "error": str(e)[:200]}
         if r.get("ok"):
+            success_text = f"✅ Posted to {LABEL[platform]}"
+            if platform == "blog" and r.get("path"):
+                success_text += f"\n\nAvailable at: {r['path']}"
             telegram.edit_message(
                 chat_id,
                 message_id,
-                f"✅ Posted to {LABEL[platform]}",
+                success_text,
                 reply_markup={"inline_keyboard": []},
             )
             telegram.answer_callback(cb_id, "Posted")
         else:
+            retry_payload = draft.get("blog") if platform == "blog" else draft.get(platform, "")
             telegram.edit_message(
                 chat_id,
                 message_id,
-                format_platform_message(platform, draft.get(platform, ""), bool(draft.get("image_file_id"))) + f"\n\n❌ {r.get('error','unknown error')}",
+                format_platform_message(platform, retry_payload, bool(draft.get("image_file_id"))) + f"\n\n❌ {r.get('error','unknown error')}",
                 reply_markup=platform_keyboard(platform),
             )
             telegram.answer_callback(cb_id, "Failed")

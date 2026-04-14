@@ -174,3 +174,59 @@ def check_and_increment_quota(tg_id: int) -> tuple[bool, int, int]:
     used += 1
     update_user(tg_id, posts_used=used, posts_period_start=period_start)
     return True, used, limit
+
+
+# ---- Blog posts (multi-tenant) ----
+# Storage layout:
+#   blog:post:{user_id}:{slug}  -> JSON of one post
+#   blog:index:{user_id}        -> ZSET of slug -> published_at (newest first via ZREVRANGE)
+def _blog_post_key(user_id: int, slug: str) -> str:
+    return f"blog:post:{user_id}:{slug}"
+
+
+def _blog_index_key(user_id: int) -> str:
+    return f"blog:index:{user_id}"
+
+
+def blog_get(user_id: int, slug: str) -> Optional[Dict[str, Any]]:
+    raw = kv_get(_blog_post_key(user_id, slug))
+    return json.loads(raw) if raw else None
+
+
+def blog_slug_exists(user_id: int, slug: str) -> bool:
+    return kv_get(_blog_post_key(user_id, slug)) is not None
+
+
+def blog_put(user_id: int, slug: str, post: Dict[str, Any], published_at: int) -> None:
+    """Upsert a post and update the user's index ZSET."""
+    kv_set(_blog_post_key(user_id, slug), json.dumps(post, ensure_ascii=False))
+    _post_req(["ZADD", _blog_index_key(user_id), str(published_at), slug])
+
+
+def blog_delete(user_id: int, slug: str) -> bool:
+    existed = blog_slug_exists(user_id, slug)
+    kv_del(_blog_post_key(user_id, slug))
+    _post_req(["ZREM", _blog_index_key(user_id), slug])
+    return existed
+
+
+def blog_list(user_id: int, limit: int = 10, offset: int = 0) -> tuple[list, int]:
+    """Return (posts_list, total_count). Newest first."""
+    total_raw = _post_req(["ZCARD", _blog_index_key(user_id)])
+    try:
+        total = int(total_raw or 0)
+    except (TypeError, ValueError):
+        total = 0
+    if limit <= 0 or total == 0:
+        return [], total
+    stop = offset + limit - 1
+    slugs = _post_req(["ZREVRANGE", _blog_index_key(user_id), str(offset), str(stop)]) or []
+    posts = []
+    for s in slugs:
+        raw = kv_get(_blog_post_key(user_id, s))
+        if raw:
+            try:
+                posts.append(json.loads(raw))
+            except json.JSONDecodeError:
+                pass
+    return posts, total
