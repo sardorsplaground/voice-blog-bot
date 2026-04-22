@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler
 from api._lib import db, ai, telegram, linkedin, x as xlib, website
 from api._lib.crypto import decrypt, encrypt
 
-VERSION = "postr-ai-1.4.2"
+VERSION = "postr-ai-1.4.3"
 BOT_USERNAME = "PostrAIBot"
 
 PLATFORMS = ("linkedin", "x", "tg", "blog")
@@ -98,7 +98,7 @@ def connect_keyboard(user: dict) -> dict:
         rows.append([("🔗 Connect LinkedIn", "cb:connect:linkedin")])
     if not user.get("x_access"):
         rows.append([("🐦 Connect X", "cb:connect:x")])
-    if not user.get("tg_channel_id") and (user.get("li_token") or user.get("x_access")):
+    if not user.get("tg_channel_id"):
         rows.append([("📣 Connect Telegram channel", "cb:connect:telegram")])
     # Website API: always show — no OAuth, just instructions to embed on their site.
     rows.append([("🌐 Website blog API", "cb:connect:website")])
@@ -246,9 +246,10 @@ def cmd_start(chat_id, tg_id, first_name=""):
         f"👋 Hey {name}, I'm Postr AI.\n\n"
         "Send me any text (or a photo with a caption) and I'll prep a separate draft for each connected platform "
         "(LinkedIn, X, Telegram channel, your website). For each one you can post it, AI-rewrite it, or cancel independently.\n\n"
-        "Your website publishes via a platform-agnostic blog API — you get a personal feed URL + a snippet "
-        "you paste into any site (WordPress, Webflow, plain HTML, etc.). Tap 🌐 Website below to see it, or run /website anytime.\n\n"
-        "First, connect your accounts:"
+        "📣 To connect a Telegram channel: tap the button below, or type /setchannel @yourchannel "
+        "(make sure I'm an admin in the channel first).\n\n"
+        "🌐 Your website publishes via a blog API — run /website anytime to get your feed URL + embed snippet.\n\n"
+        "Connect your accounts:"
     )
     telegram.send_message(chat_id, text, reply_markup=connect_keyboard(user))
 
@@ -320,13 +321,9 @@ def handle_text(chat_id, tg_id, text, message_id, image_file_id: str = ""):
     has_li = bool(user.get("li_token"))
     has_x = bool(user.get("x_access"))
     has_tg = bool(user.get("tg_channel_id"))
-    if not (has_li or has_x or has_tg):
-        telegram.send_message(
-            chat_id,
-            "You need to connect at least one account first.",
-            reply_markup=connect_keyboard(user),
-        )
-        return
+    # Blog is always available (no auth required), so don't block if user has no social accounts.
+    # Only block if there's literally nothing useful — not even blog would make sense without a single connection.
+    # For now, always allow: blog is always a destination.
     if len(text) > 4000:
         telegram.send_message(chat_id, "That's too long — keep it under 4000 characters.")
         return
