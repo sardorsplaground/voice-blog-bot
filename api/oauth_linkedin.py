@@ -8,16 +8,16 @@ from api._lib.crypto import encrypt
 
 
 HTML_OK = """<!doctype html><meta charset=utf-8><title>Postr AI — Connected</title>
-<style>body{font-family:-apple-system,Inter,sans-serif;background:#0F172A;color:#fff;display:grid;place-items:center;height:100vh;margin:0}
-.card{background:#1E293B;padding:48px;border-radius:24px;text-align:center;max-width:420px}
-h1{margin:0 0 12px;font-size:28px}p{color:#94A3B8;margin:0 0 24px}
-a{display:inline-block;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:600}</style>
+<style>body{{font-family:-apple-system,Inter,sans-serif;background:#0F172A;color:#fff;display:grid;place-items:center;height:100vh;margin:0}}
+.card{{background:#1E293B;padding:48px;border-radius:24px;text-align:center;max-width:420px}}
+h1{{margin:0 0 12px;font-size:28px}}p{{color:#94A3B8;margin:0 0 24px}}
+a{{display:inline-block;background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:600}}</style>
 <div class=card><h1>LinkedIn connected ✓</h1><p>Head back to Telegram and start sending text — Postr AI will turn it into posts for you.</p>
 <a href="https://t.me/PostrAIBot">Open Postr AI</a></div>"""
 
 HTML_ERR = """<!doctype html><meta charset=utf-8><title>Postr AI — Error</title>
-<style>body{font-family:-apple-system,Inter,sans-serif;background:#0F172A;color:#fff;display:grid;place-items:center;height:100vh;margin:0}
-.card{background:#1E293B;padding:48px;border-radius:24px;text-align:center;max-width:420px}</style>
+<style>body{{font-family:-apple-system,Inter,sans-serif;background:#0F172A;color:#fff;display:grid;place-items:center;height:100vh;margin:0}}
+.card{{background:#1E293B;padding:48px;border-radius:24px;text-align:center;max-width:420px}}</style>
 <div class=card><h1>Couldn't connect LinkedIn</h1><p>{msg}</p></div>"""
 
 
